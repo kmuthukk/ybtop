@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>ybtop viewer</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <header class="toolbar">
+    <span class="brand-mark">ybtop</span>
+    <span class="brand-sub">viewer</span>
+    <span id="ybtop-version" class="brand-version" title="ybtop version">__YBTOP_VERSION__</span>
+    <span class="toolbar-snapshot-nav">
+      <button type="button" id="btn-prev" title="Previous snapshot (one older)">← Prev</button>
+      <button type="button" id="btn-next" title="Next snapshot (one newer)">Next →</button>
+    </span>
+    <span class="toolbar-nav-gap" aria-hidden="true"></span>
+    <span class="toolbar-snapshot-nav">
+      <button type="button" id="btn-first" title="Oldest snapshot">First</button>
+      <button type="button" id="btn-last" title="Newest snapshot">Last</button>
+    </span>
+    <span id="nav-label" class="nav-label"></span>
+    <span id="status-msg" class="status"></span>
+  </header>
+  <main class="app-shell">
+    <nav id="app-nav" class="app-tabs" role="tablist" aria-label="Data sections"></nav>
+    <div id="app" class="app-content"></div>
+  </main>
+  <script src="/static/app.js"></script>
+</body>
+</html>

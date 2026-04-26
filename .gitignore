@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+*.egg-info/
+.eggs/
+dist/
+build/
+*.egg
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local exports / ybtop snapshot dirs (uncomment if you keep snapshots in-repo)
+# out_*/
+# *.out.json
+
+# IDE
+.idea/
+.vscode/
+*.swp
+.DS_Store

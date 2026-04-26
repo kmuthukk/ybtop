@@ -1,0 +1,121 @@
+from __future__ import annotations
+
+import mimetypes
+import sys
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from urllib.parse import unquote, urlparse
+
+from ybtop import __version__ as _ybtop_version
+
+
+def _web_dir() -> Path:
+    return Path(__file__).resolve().parent / "web"
+
+
+class YbtopHTTPRequestHandler(BaseHTTPRequestHandler):
+    data_dir: Path = Path(".")
+
+    def log_message(self, fmt: str, *args: object) -> None:
+        return
+
+    def _send_bytes(self, data: bytes, content_type: str, status: int = 200) -> None:
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(data)
+
+    def _send_file_from(self, base: Path, rel: str) -> None:
+        rel = rel.lstrip("/")
+        if ".." in rel.split("/"):
+            self.send_error(403)
+            return
+        path = (base / rel).resolve()
+        try:
+            path.relative_to(base.resolve())
+        except ValueError:
+            self.send_error(403)
+            return
+        if not path.is_file():
+            self.send_error(404)
+            return
+        ctype, _ = mimetypes.guess_type(str(path))
+        if not ctype:
+            ctype = "application/octet-stream"
+        self._send_bytes(path.read_bytes(), ctype)
+
+    def do_GET(self) -> None:  # noqa: N802
+        parsed = urlparse(self.path)
+        path = unquote(parsed.path) or "/"
+
+        if path in ("/", "/index.html"):
+            idx = _web_dir() / "index.html"
+            if not idx.is_file():
+                self._send_bytes(b"ybtop web assets missing; reinstall package.", "text/plain", 500)
+                return
+            html = idx.read_text(encoding="utf-8")
+            if "__YBTOP_VERSION__" in html:
+                html = html.replace("__YBTOP_VERSION__", f"v{_ybtop_version}")
+            self._send_bytes(html.encode("utf-8"), "text/html; charset=utf-8")
+            return
+
+        if path.startswith("/static/"):
+            rel = path[len("/static/") :]
+            self._send_file_from(_web_dir(), rel)
+            return
+
+        if path.endswith(".json"):
+            name = path.lstrip("/")
+            if ".." in name or "/" in name.strip("/"):
+                self.send_error(403)
+                return
+            self._send_file_from(type(self).data_dir, name)
+            return
+
+        self.send_error(404)
+
+
+def run_serve(*, data_dir: str, host: str, port: int) -> None:
+    root = Path(data_dir).resolve()
+    if not root.is_dir():
+        raise SystemExit(f"Data directory does not exist or is not a directory: {root}")
+
+    YbtopHTTPRequestHandler.data_dir = root
+
+    httpd = ThreadingHTTPServer((host, port), YbtopHTTPRequestHandler)
+    print(f"ybtop serve: http://{host}:{port}/  (data dir: {root})")
+    try:
+        httpd.serve_forever()
+    except KeyboardInterrupt:
+        print("\nShutting down.")
+
+
+def start_serve_background(*, data_dir: str, host: str, port: int) -> None:
+    """Start the static viewer in a daemon thread (used by ``ybtop watch``)."""
+
+    def run() -> None:
+        root = Path(data_dir).resolve()
+        try:
+            root.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            print(f"ybtop: could not create data directory {root}: {exc}", file=sys.stderr)
+            return
+        YbtopHTTPRequestHandler.data_dir = root
+        try:
+            httpd = ThreadingHTTPServer((host, port), YbtopHTTPRequestHandler)
+        except OSError as exc:
+            print(
+                f"ybtop: could not start viewer on http://{host}:{port}/ ({exc})",
+                file=sys.stderr,
+            )
+            return
+        print(f"ybtop viewer: http://{host}:{port}/  (data dir: {root})")
+        try:
+            httpd.serve_forever()
+        except OSError:
+            pass
+
+    threading.Thread(target=run, name="ybtop-viewer-http", daemon=True).start()
