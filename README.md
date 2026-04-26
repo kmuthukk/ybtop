@@ -5,14 +5,14 @@ Terminal and file-based observability for [YugabyteDB](https://www.yugabyte.com/
 ## Install
 
 ```bash
-pip install .
+pip3 install .
 ```
 
 ## Key commands
 
 | Command | Purpose |
 |--------|--------|
-| **`ybtop watch`** | Live **terminal** status (iteration, last snapshot name, time, small **placement/ASH summary** by cloud·region·zone) and, on every tick, a new **`ybtop.out.*.json`** in `--output-dir`, with **`ybtop.manifest.json`** updated. **By default also starts the HTTP viewer** on `127.0.0.1:8765` (same as `ybtop serve`); use **`--no-serve`** to only write files and use the TUI. Requires DB connectivity for the full run. |
+| **`ybtop watch`** | Live **terminal** status (iteration, last snapshot name, time, **placement/ASH summary** by cloud·region·zone) and, on every tick, a new **`ybtop.out.*.json`** in `--output-dir`, with **`ybtop.manifest.json`** updated. **By default also starts the HTTP viewer** on `127.0.0.1:8765` (same as `ybtop serve`); use **`--no-serve`** to only write files and use the TUI. Requires DB connectivity for the full run. |
 | **`ybtop serve --data-dir DIR`** | **Read-only** HTTP server: serves the static viewer and JSON from a directory that already has **`ybtop.manifest.json`** and **`ybtop.out.*.json`**. **No database** is needed—ideal for **offline** review, archives, or sharing a folder of snapshots. |
 | **`ybtop reset_pg_stat_statements`** | Runs `pg_stat_statements_reset()` on **each** YSQL node (via the same `yb_servers()`-based fan-out). Requires appropriate privileges. |
 
