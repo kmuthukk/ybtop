@@ -74,6 +74,7 @@ def run_watch(settings: Settings, *, viewer_url: Optional[str] = None) -> None:
         screen=True,
         redirect_stdout=False,
         redirect_stderr=False,
+        vertical_overflow="visible",
     ) as live:
         while True:
             iteration += 1

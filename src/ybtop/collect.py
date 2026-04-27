@@ -6,7 +6,7 @@ from typing import Any, Optional
 
 from ybtop import queries as Q
 from ybtop.capabilities import detect_capabilities
-from ybtop.db import connect
+from ybtop.db import connect, tag_sql
 from ybtop.merge import merge_ash_groups, merge_pg_stat_statements
 from ybtop.topology import YsqlNode, discover_ysql_nodes, dsn_for_node
 
@@ -114,7 +114,7 @@ def collect_cluster_local_tablets(
 
 def reset_pg_stat_statements_cluster(seed_dsn: str) -> list[dict[str, Any]]:
     """Call pg_stat_statements_reset() on each YSQL node discovered from the seed connection."""
-    reset_sql = "SELECT pg_stat_statements_reset();"
+    reset_sql = tag_sql("SELECT pg_stat_statements_reset();")
     out: list[dict[str, Any]] = []
     try:
         nodes = discover_ysql_nodes(seed_dsn)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import textwrap
 from datetime import datetime, timezone
 from typing import Any, Optional, Tuple, Union
 
@@ -11,6 +12,57 @@ from rich.table import Table
 from rich.text import Text
 
 
+def truncate_query_cell(
+    text: Any,
+    *,
+    max_width: int,
+    max_lines: int = 4,
+) -> str:
+    """
+    Cap query text to *max_lines* **display** lines at *max_width* (same as the table
+    column). Long one-line SQL is wrapped, then the first *max_lines* lines are kept;
+    a trailing ``...`` is added if anything was cut (including more wrapped lines
+    or a long line segment).
+    """
+    if text is None:
+        return ""
+    s = str(text).replace("\r\n", "\n").replace("\r", "\n")
+    if not s.strip():
+        return ""
+    w = max(4, int(max_width))
+    wrapped: list[str] = []
+    for part in s.split("\n"):
+        if part == "":
+            if wrapped:
+                wrapped.append("")
+            continue
+        seg = textwrap.wrap(
+            part,
+            width=w,
+            break_long_words=True,
+            break_on_hyphens=False,
+        )
+        if seg:
+            wrapped.extend(seg)
+    if not wrapped:
+        return s[:w] + ("..." if len(s) > w else "")
+    if len(wrapped) <= max_lines:
+        return "\n".join(wrapped)
+    head = wrapped[: max_lines - 1]
+    last = wrapped[max_lines - 1]
+    if len(last) + 3 > w:
+        last = last[: max(0, w - 3)] + "..."
+    else:
+        last = last + "..."
+    return "\n".join(head + [last])
+
+
+def _bold_table_title(title: str) -> Optional[Text]:
+    if not title:
+        return None
+    return Text(title, style="bold")
+
+
 def keyed_table(
     title: str,
     rows: list[dict[str, str]],
@@ -18,7 +70,7 @@ def keyed_table(
 ) -> Table:
     """Render fixed-column table (column order taken from *column_keys*)."""
     table = Table(
-        title=title,
+        title=_bold_table_title(title),
         box=box.SIMPLE_HEAD,
         show_lines=False,
         header_style="bold",
@@ -28,23 +80,41 @@ def keyed_table(
         table.add_column("(no rows)")
         table.add_row("—")
         return table
+    col_widths: list[int] = []
     for k in column_keys:
         kl = k.lower()
         w = 52 if any(x in kl for x in ("query", "location", "event", "wait")) else 12
         if "host" in kl or (("node" in kl) and ("session" not in kl)):
             w = 28
-        table.add_column(k, overflow="ellipsis", max_width=w)
+        col_widths.append(w)
+        if "query" in kl:
+            table.add_column(k, overflow="crop", max_width=w, no_wrap=True)
+        else:
+            ovh = (
+                "fold"
+                if any(x in kl for x in ("location", "event", "wait"))
+                else "ellipsis"
+            )
+            table.add_column(k, overflow=ovh, max_width=w)
     if not rows:
         table.add_row(*(["—"] + [""] * (len(column_keys) - 1) if len(column_keys) else ["—"]))
         return table
     for r in rows:
-        table.add_row(*[str(r.get(c, "")) for c in column_keys])
+        cells: list[str] = []
+        for i, c in enumerate(column_keys):
+            v = r.get(c, "")
+            if c == "query":
+                v = truncate_query_cell(v, max_width=col_widths[i])
+            else:
+                v = "" if v is None else str(v)
+            cells.append(v)
+        table.add_row(*cells)
     return table
 
 
 def table_from_rows(title: str, rows: list[dict[str, Any]]) -> Table:
     table = Table(
-        title=title,
+        title=_bold_table_title(title),
         box=box.SIMPLE_HEAD,
         show_lines=False,
         header_style="bold",

@@ -7,6 +7,21 @@ from typing import Any, Optional, Union
 import psycopg
 from psycopg.rows import dict_row
 
+# Prepended to every YSQL statement so logs / pg_stat / ASH can attribute load to ybtop.
+SQL_SERVICE_TAG = "/* service:ybtop */"
+
+
+def tag_sql(sql: str) -> str:
+    """Prefix ``SQL_SERVICE_TAG`` unless the statement is already tagged that way."""
+    if not sql or not sql.strip():
+        return sql
+    body = sql.lstrip()
+    if body.startswith(SQL_SERVICE_TAG):
+        return body
+    # ``body`` drops leading newline/indent from ``"""\\n    SELECT ...`` style strings so
+    # the tag is not followed by an extra blank line in pg_stat / logs.
+    return f"{SQL_SERVICE_TAG} {body}"
+
 
 def _connect_with_hint(dsn: str) -> psycopg.Connection:
     try:
@@ -37,5 +52,5 @@ def fetch_all(
     params: Optional[Union[Sequence[Any], Mapping[str, Any]]] = None,
 ) -> list[dict[str, Any]]:
     with conn.cursor() as cur:
-        cur.execute(sql, params or ())
+        cur.execute(tag_sql(sql), params or ())
         return list(cur.fetchall())

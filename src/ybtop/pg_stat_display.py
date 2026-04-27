@@ -274,7 +274,7 @@ def _format_pg_rows_for_table(
             "time (ms)": f"{float(tms):.2f}" if tms is not None else "",
             "time %": f"{float(tpct):.2f}" if tpct is not None else "",
             "mean_ms": f"{float(mm):.2f}" if mm is not None else "",
-            "query": (q if q is not None else "")[:500],
+            "query": ("" if q is None else str(q)),
         }
         if include_db:
             d["dbname"] = str(r.get("dbname") or "")
