@@ -11,6 +11,37 @@ from rich.table import Table
 from rich.text import Text
 
 
+def keyed_table(
+    title: str,
+    rows: list[dict[str, str]],
+    column_keys: list[str],
+) -> Table:
+    """Render fixed-column table (column order taken from *column_keys*)."""
+    table = Table(
+        title=title,
+        box=box.SIMPLE_HEAD,
+        show_lines=False,
+        header_style="bold",
+        expand=True,
+    )
+    if not rows and not column_keys:
+        table.add_column("(no rows)")
+        table.add_row("—")
+        return table
+    for k in column_keys:
+        kl = k.lower()
+        w = 52 if any(x in kl for x in ("query", "location", "event", "wait")) else 12
+        if "host" in kl or (("node" in kl) and ("session" not in kl)):
+            w = 28
+        table.add_column(k, overflow="ellipsis", max_width=w)
+    if not rows:
+        table.add_row(*(["—"] + [""] * (len(column_keys) - 1) if len(column_keys) else ["—"]))
+        return table
+    for r in rows:
+        table.add_row(*[str(r.get(c, "")) for c in column_keys])
+    return table
+
+
 def table_from_rows(title: str, rows: list[dict[str, Any]]) -> Table:
     table = Table(
         title=title,
@@ -124,16 +155,22 @@ def crz_ash_summary_rows(doc: dict[str, Any]) -> list[dict[str, Any]]:
 
     raw = list(acc.values())
     total_samples = sum(int(x["samples"]) for x in raw)
+    if rate_denom > 0:
+        raw.sort(
+            key=lambda x: (
+                x["samples"] / rate_denom,
+                str(x["cloud"]),
+                str(x["region"]),
+                str(x["zone"]),
+            ),
+            reverse=True,
+        )
+    else:
+        raw.sort(
+            key=lambda x: (str(x["cloud"]), str(x["region"]), str(x["zone"])),
+        )
     out: list[dict[str, Any]] = []
-    for r in sorted(
-        raw,
-        key=lambda x: (
-            -x["samples"],
-            str(x["cloud"]),
-            str(x["region"]),
-            str(x["zone"]),
-        ),
-    ):
+    for r in raw:
         s = int(r["samples"])
         if rate_denom > 0:
             rate = round(s / rate_denom, 4)
@@ -151,3 +188,97 @@ def crz_ash_summary_rows(doc: dict[str, Any]) -> list[dict[str, Any]]:
             }
         )
     return out
+
+
+def _format_ash_sessions_per_sec(n: float) -> str:
+    """Match web `formatAshSessionsPerSec` style (variable precision)."""
+    if n == 0:
+        return "0"
+    if n >= 100:
+        return f"{n:.2f}"
+    if n >= 10:
+        return f"{n:.3f}"
+    if n >= 1:
+        return f"{n:.4f}"
+    return f"{n:.5f}"
+
+
+def live_top5_nodes_by_active_session_sec(doc: dict[str, Any]) -> Union[Table, Text]:
+    """
+    Top 5 nodes by sum(ASH samples) / ash_window length (same rate as the cloud/region/zone panel).
+    """
+    topo: dict[str, Any] = doc.get("node_topology") or {}
+    if not topo:
+        return Text(
+            "Top 5 — nodes (by active sessions/sec): (no node_topology in snapshot)",
+            style="dim",
+        )
+
+    ash_pn: dict[str, list[dict[str, Any]]] = (
+        (doc.get("yb_active_session_history") or {}).get("per_node") or {}
+    )
+    interval_sec = _ash_interval_seconds_utc(doc)
+    rate_denom = interval_sec if interval_sec > 0 else 0.0
+
+    combined: list[dict[str, Any]] = []
+    for nid, t in topo.items():
+        rows = ash_pn.get(nid) or []
+        samples = sum(int(r.get("samples") or 0) for r in rows)
+        host = (t or {}).get("host")
+        port = (t or {}).get("port")
+        host_s = (str(host).strip() if host is not None and str(host).strip() else None)
+        if host_s and port is not None and str(port).strip() != "":
+            hp = f"{host_s}:{port}"
+        elif host_s:
+            hp = host_s
+        else:
+            hp = str(nid)
+        rate = (float(samples) / float(rate_denom)) if rate_denom > 0 else 0.0
+        combined.append(
+            {
+                "host:port": hp,
+                "cloud": (t or {}).get("cloud") or "",
+                "region": (t or {}).get("region") or "",
+                "zone": (t or {}).get("zone") or "",
+                "samples": samples,
+                "active sessions/sec": rate,
+            }
+        )
+
+    total_samples = sum(int(c["samples"]) for c in combined)
+    for c in combined:
+        sm = int(c["samples"])
+        lp = (100.0 * sm / total_samples) if total_samples > 0 else 0.0
+        c["load %"] = f"{lp:.2f}%"
+
+    # DESC by Active Sessions/Sec (numeric), then by host:port for a stable order.
+    combined.sort(
+        key=lambda r: (float(r["active sessions/sec"]), r["host:port"], str(r.get("cloud"))),
+        reverse=True,
+    )
+    top5 = combined[:5]
+
+    # Same info order as the cloud/region/zone panel (placement, then node address, then rates).
+    col_keys = [
+        "cloud",
+        "region",
+        "zone",
+        "host:port",
+        "active sessions/sec",
+        "load %",
+    ]
+    rows_out: list[dict[str, str]] = []
+    for r in top5:
+        rate = float(r["active sessions/sec"])
+        rows_out.append(
+            {
+                "cloud": str(r["cloud"]),
+                "region": str(r["region"]),
+                "zone": str(r["zone"]),
+                "host:port": str(r["host:port"]),
+                "active sessions/sec": _format_ash_sessions_per_sec(rate),
+                "load %": str(r["load %"]),
+            }
+        )
+
+    return keyed_table("Top 5 — nodes (by active sessions/sec)", rows_out, col_keys)

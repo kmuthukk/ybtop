@@ -10,6 +10,8 @@ from typing import Any, Optional
 
 from rich.console import Console, Group
 from rich.live import Live
+from rich.markup import escape
+from rich.style import Style
 from rich.text import Text
 
 from ybtop import __version__
@@ -31,7 +33,8 @@ from ybtop.config import (
     resolve_ash_range,
     resolve_seed_dsn,
 )
-from ybtop.render import crz_ash_summary_rows, format_seed_line, table_from_rows
+from ybtop.pg_stat_display import live_top5_statements_table
+from ybtop.render import crz_ash_summary_rows, live_top5_nodes_by_active_session_sec, table_from_rows
 from ybtop.snapshot_write import (
     build_snapshot_document,
     gc_snapshots_and_manifest,
@@ -50,16 +53,43 @@ def _parse_ts(raw: str) -> datetime:
     return dt.astimezone(timezone.utc)
 
 
-def run_watch(settings: Settings) -> None:
+def _watch_header_line(*, viewer_url: Optional[str], out_dir: Path) -> Text:
+    root = str(out_dir.resolve())
+    if viewer_url:
+        return Text.assemble(
+            "ybtop viewer: ",
+            Text(viewer_url, style=Style(bold=True, link=viewer_url)),
+            f"  (data dir: {escape(root)})",
+        )
+    return Text(f"ybtop watch: (data dir: {root})")
+
+
+def run_watch(settings: Settings, *, viewer_url: Optional[str] = None) -> None:
     console = Console()
     out_dir = Path(settings.snapshot_output_dir)
     iteration = 0
-    last_checkpoint: Optional[str] = None
-    with Live(console=console, refresh_per_second=4) as live:
+    with Live(
+        console=console,
+        refresh_per_second=1,
+        screen=True,
+        redirect_stdout=False,
+        redirect_stderr=False,
+    ) as live:
         while True:
             iteration += 1
             started = time.monotonic()
             doc: Any = None
+            snapshot_err: Optional[str] = None
+            if iteration == 1:
+                live.update(
+                    Group(
+                        _watch_header_line(viewer_url=viewer_url, out_dir=out_dir),
+                        Text(
+                            "Collecting data for first checkpoint. Please wait...",
+                            style="dim",
+                        ),
+                    )
+                )
             try:
                 ash_start, ash_end = resolve_ash_range(settings)
                 doc = build_snapshot_document(
@@ -69,48 +99,81 @@ def run_watch(settings: Settings) -> None:
                     statements_per_node=settings.snapshot_statements_per_node,
                     ash_per_node=settings.snapshot_ash_per_node,
                 )
-                snap_path = write_snapshot_and_update_manifest(output_dir=out_dir, document=doc)
-                last_checkpoint = snap_path.name
+                write_snapshot_and_update_manifest(output_dir=out_dir, document=doc)
                 gc_snapshots_and_manifest(
                     output_dir=out_dir,
                     retention_hours=settings.snapshot_retention_hours,
                 )
             except Exception as exc:  # noqa: BLE001
                 doc = None
-                console.print(f"[yellow]snapshot write failed:[/yellow] {exc}")
+                snapshot_err = str(exc)
             utc_now = datetime.now(timezone.utc)
-            iter_line = Text(f"Iteration {iteration}")
-            ck_line = Text(
-                f"Checkpoint: {last_checkpoint or '—'}",
-                style="dim",
-            )
-            utc_line = Text(utc_now.strftime("UTC %Y-%m-%d %H:%M:%S"), style="bold")
-            seed_line = Text(format_seed_line(settings.seed_dsn), style="dim")
-            parts: list[Any] = [iter_line, ck_line, utc_line, seed_line]
+            ts_str = utc_now.strftime("%Y-%m-%d %H:%M:%S")
+            table_block: list[Any] = []
             if doc is not None and isinstance(doc, dict):
+                table_block.append(live_top5_statements_table(doc, out_dir))
+                table_block.append(live_top5_nodes_by_active_session_sec(doc))
                 crz = crz_ash_summary_rows(doc)
                 if crz:
-                    parts.append(
+                    table_block.append(
                         table_from_rows(
                             "cloud · region · zone  (nodes, active sessions/s, load %)",
                             crz,
                         )
                     )
                 else:
-                    parts.append(
+                    table_block.append(
                         Text("Placement / ASH summary: (no rows)", style="dim"),
                     )
             else:
-                parts.append(
+                u = " (unavailable; snapshot not written this tick)"
+                table_block.append(
+                    Text(f"Top 5 — pg_stat_statements{u}", style="dim"),
+                )
+                table_block.append(
+                    Text(f"Top 5 — nodes (by active sessions/sec){u}", style="dim"),
+                )
+                table_block.append(
                     Text(
-                        "Placement / ASH summary: (unavailable; snapshot not written this tick)",
+                        f"Placement / ASH summary{u}",
                         style="dim",
                     ),
                 )
-            live.update(Group(*parts))
             elapsed = time.monotonic() - started
             sleep_for = max(0.1, settings.refresh_interval - elapsed)
-            time.sleep(sleep_for)
+            deadline = time.monotonic() + sleep_for
+            while True:
+                now = time.monotonic()
+                rem = int(max(0.0, deadline - now))
+                rem_verb = "1 sec" if rem == 1 else f"{rem} secs"
+                status = Text.assemble(
+                    "Checkpoint ",
+                    Text(f"#{iteration}", style="bold"),
+                    " @ ",
+                    Text(f"{ts_str} UTC", style="bold"),
+                    ";  Next checkpoint in: ",
+                    Text(rem_verb, style="bold"),
+                    ".",
+                )
+                banner: list[Any] = []
+                if snapshot_err is not None:
+                    banner.append(
+                        Text(
+                            f"snapshot write failed: {snapshot_err}",
+                            style="bold red",
+                        )
+                    )
+                live.update(
+                    Group(
+                        _watch_header_line(viewer_url=viewer_url, out_dir=out_dir),
+                        status,
+                        *banner,
+                        *table_block,
+                    )
+                )
+                if now >= deadline - 1e-9:
+                    break
+                time.sleep(min(1.0, max(0.0, deadline - now)))
 
 
 def run_reset_pg_stat_statements(settings: Settings) -> None:
@@ -334,13 +397,27 @@ def main(argv: Optional[list[str]] = None) -> None:
         if not args.no_serve:
             from ybtop.serve import start_serve_background
 
-            start_serve_background(
+            if not start_serve_background(
                 data_dir=settings.snapshot_output_dir,
                 host=args.serve_bind,
                 port=int(args.serve_port),
-            )
+            ):
+                tail = (
+                    "Use --no-serve to run the terminal dashboard without HTTP."
+                )
+                print(
+                    "ybtop: exiting (embedded viewer did not start). " + tail,
+                    file=sys.stderr,
+                    flush=True,
+                )
+                raise SystemExit(1)
         try:
-            run_watch(settings)
+            run_watch(
+                settings,
+                viewer_url=None
+                if args.no_serve
+                else f"http://{args.serve_bind}:{int(args.serve_port)}/",
+            )
         except KeyboardInterrupt:
             sys.exit(0)
     elif args.command == "reset_pg_stat_statements":

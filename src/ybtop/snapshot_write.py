@@ -118,6 +118,33 @@ def _parse_iso_utc(s: str) -> datetime:
     return datetime.fromisoformat(t).astimezone(timezone.utc)
 
 
+def read_manifest_entries(output_dir: Path) -> list[dict[str, Any]]:
+    """Return manifest `entries` (newest last), or an empty list if missing or invalid."""
+    output_dir = output_dir.resolve()
+    manifest_path = output_dir / MANIFEST_FILENAME
+    if not manifest_path.is_file():
+        return []
+    try:
+        raw = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return []
+    if isinstance(raw, list):
+        return [e for e in raw if isinstance(e, dict)]
+    if isinstance(raw, dict) and isinstance(raw.get("entries"), list):
+        return [e for e in raw["entries"] if isinstance(e, dict)]
+    return []
+
+
+def load_snapshot_json(output_dir: Path, filename: str) -> Optional[dict[str, Any]]:
+    path = (output_dir / filename).resolve()
+    if not path.is_file():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
 def _snapshot_filename_ts(when: datetime) -> str:
     """UTC timestamp for ybtop.out.YYYYMMDD_HHMMSS.json"""
     w = when.astimezone(timezone.utc)

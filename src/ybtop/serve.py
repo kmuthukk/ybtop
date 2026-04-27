@@ -7,7 +7,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
+from rich.console import Console
+
 from ybtop import __version__ as _ybtop_version
+
+_console = Console()
 
 
 def _web_dir() -> Path:
@@ -86,36 +90,50 @@ def run_serve(*, data_dir: str, host: str, port: int) -> None:
     YbtopHTTPRequestHandler.data_dir = root
 
     httpd = ThreadingHTTPServer((host, port), YbtopHTTPRequestHandler)
-    print(f"ybtop serve: http://{host}:{port}/  (data dir: {root})")
+    url = f"http://{host}:{port}/"
+    _console.print(
+        f"ybtop serve: [link={url}]{url}[/link]  (data dir: {root})"
+    )
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
         print("\nShutting down.")
 
 
-def start_serve_background(*, data_dir: str, host: str, port: int) -> None:
-    """Start the static viewer in a daemon thread (used by ``ybtop watch``)."""
+def start_serve_background(*, data_dir: str, host: str, port: int) -> bool:
+    """
+    Start the static viewer in a daemon thread (used by ``ybtop watch``).
 
-    def run() -> None:
-        root = Path(data_dir).resolve()
-        try:
-            root.mkdir(parents=True, exist_ok=True)
-        except OSError as exc:
-            print(f"ybtop: could not create data directory {root}: {exc}", file=sys.stderr)
-            return
-        YbtopHTTPRequestHandler.data_dir = root
-        try:
-            httpd = ThreadingHTTPServer((host, port), YbtopHTTPRequestHandler)
-        except OSError as exc:
-            print(
-                f"ybtop: could not start viewer on http://{host}:{port}/ ({exc})",
-                file=sys.stderr,
-            )
-            return
-        print(f"ybtop viewer: http://{host}:{port}/  (data dir: {root})")
+    The listen socket is bound in the **calling** thread so port / host errors are
+    visible before the watch UI runs. Returns ``True`` on success, ``False`` if
+    the data directory or HTTP server could not be started (error on stderr).
+    """
+
+    def serve_loop(httpd: ThreadingHTTPServer) -> None:
         try:
             httpd.serve_forever()
         except OSError:
             pass
 
-    threading.Thread(target=run, name="ybtop-viewer-http", daemon=True).start()
+    root = Path(data_dir).resolve()
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        msg = f"ybtop: could not create data directory {root}: {exc}"
+        print(msg, file=sys.stderr, flush=True)
+        return False
+    YbtopHTTPRequestHandler.data_dir = root
+    try:
+        httpd = ThreadingHTTPServer((host, port), YbtopHTTPRequestHandler)
+    except OSError as exc:
+        msg = f"ybtop: could not start viewer on http://{host}:{port}/ ({exc})"
+        print(msg, file=sys.stderr, flush=True)
+        return False
+
+    threading.Thread(
+        target=serve_loop,
+        name="ybtop-viewer-http",
+        args=(httpd,),
+        daemon=True,
+    ).start()
+    return True
