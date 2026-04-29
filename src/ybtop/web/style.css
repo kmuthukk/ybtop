@@ -147,6 +147,10 @@ a.ash-queryid-deeplink:hover {
   overflow: auto;
 }
 
+.ash-mode-banner-sql {
+  font-size: calc(1em + 2pt);
+}
+
 .status {
   margin-left: auto;
   font-size: 0.85rem;

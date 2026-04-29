@@ -579,17 +579,6 @@
     return wrap;
   }
 
-  function ashMergeKey(r) {
-    return [
-      normQid(r.query_id),
-      r.wait_event_component,
-      r.wait_event,
-      r.wait_event_type,
-      r.wait_event_aux,
-      r.ysql_dbid == null ? "" : String(r.ysql_dbid),
-    ].join("\0");
-  }
-
   /** YSQL + no wait_event_aux + no object_name → show object as [PGLayer]. */
   function ashDisplayObjectName(r) {
     const c = r.wait_event_component;
@@ -601,6 +590,20 @@
       return "[PGLayer]";
     }
     return obEmpty ? null : String(ob);
+  }
+
+  /** Group ASH rows by displayed object identity (not wait_event_aux — many aux values share one object). */
+  function ashMergeKey(r) {
+    const disp = ashDisplayObjectName(r);
+    const objKey = disp != null ? String(disp) : "";
+    return [
+      normQid(r.query_id),
+      r.wait_event_component,
+      r.wait_event,
+      r.wait_event_type,
+      objKey,
+      r.ysql_dbid == null ? "" : String(r.ysql_dbid),
+    ].join("\0");
   }
 
   function mergeAsh(perNode) {
@@ -1701,10 +1704,13 @@
         const qText = getQueryTextForToolbar(doc, qF) || "";
         const note = el("div", { className: "ash-mode-banner" });
         note.appendChild(
-          el("div", { className: "ash-mode-banner-title", textContent: "Showing ASH Data for:" })
+          el("div", {
+            className: "ash-mode-banner-title",
+            textContent: `Showing ASH Data for query_id=${qF}:`,
+          })
         );
         const pre = el("pre", { className: "ash-mode-banner-body" });
-        pre.textContent = ` query_id=${qF};\n query=${qText}`;
+        pre.appendChild(el("span", { className: "ash-mode-banner-sql", textContent: ` query=${qText}` }));
         note.appendChild(pre);
         panelAsh.appendChild(note);
       }
@@ -1740,52 +1746,52 @@
         )
       );
 
-      const byNsQuery = ashEnriched(groupAshByNamespaceQuery(mergedAsh));
-      const byNsQueryColsAll = [
-        ASH_SPS_COL,
-        ASH_LOAD_COL,
-        { key: "namespace_name", label: "namespace" },
-        { key: "query", label: "query" },
-      ];
-      const byNsQueryCols = qF ? ashColumnsWithoutQueryIdAndQuery(byNsQueryColsAll) : byNsQueryColsAll;
-      const byNsQueryTitle = qF
-        ? `Full report — ASH by namespace (${byNsQuery.length} groups)`
-        : `Full report — ASH by namespace + query (${byNsQuery.length} groups)`;
-      panelAsh.appendChild(
-        buildSortableTable(byNsQueryTitle, byNsQuery, byNsQueryCols, "sec-ash-ns-q")
-      );
+      if (!qF) {
+        const byNsQuery = ashEnriched(groupAshByNamespaceQuery(mergedAsh));
+        const byNsQueryColsAll = [
+          ASH_SPS_COL,
+          ASH_LOAD_COL,
+          { key: "namespace_name", label: "namespace" },
+          { key: "query", label: "query" },
+        ];
+        const byNsQueryCols = byNsQueryColsAll;
+        const byNsQueryTitle = `ASH by namespace + query (${byNsQuery.length} groups)`;
+        panelAsh.appendChild(
+          buildSortableTable(byNsQueryTitle, byNsQuery, byNsQueryCols, "sec-ash-ns-q")
+        );
 
-      const byNsObj = groupSum(mergedAsh, (r) => {
-        const nn = r.namespace_name || "";
-        const on = r.object_name || "";
-        return `${nn}\0${on}`;
-      }).map((x) => ({
-        namespace_name: String(x.key).split("\0")[0],
-        object_name: String(x.key).split("\0")[1],
-        samples: x.samples,
-      }));
-      const byNsObjTop = withAshLoadPercent(
-        withAshSessionsPerSec(byNsObj.slice(0, 50), ashIntervalSec),
-        byNsObj
-      );
-      panelAsh.appendChild(
-        buildSortableTable(
-          "Top 50 — ASH by namespace + object_name",
-          byNsObjTop,
-          [
-            ASH_SPS_COL,
-            ASH_LOAD_COL,
-            { key: "namespace_name", label: "namespace" },
-            { key: "object_name", label: "object_name" },
-          ],
-          "sec-ash-ns-obj"
-        )
-      );
+        const byNsObj = groupSum(mergedAsh, (r) => {
+          const nn = r.namespace_name || "";
+          const on = r.object_name || "";
+          return `${nn}\0${on}`;
+        }).map((x) => ({
+          namespace_name: String(x.key).split("\0")[0],
+          object_name: String(x.key).split("\0")[1],
+          samples: x.samples,
+        }));
+        const byNsObjTop = withAshLoadPercent(
+          withAshSessionsPerSec(byNsObj.slice(0, 50), ashIntervalSec),
+          byNsObj
+        );
+        panelAsh.appendChild(
+          buildSortableTable(
+            "Top 50 — ASH by namespace + object_name",
+            byNsObjTop,
+            [
+              ASH_SPS_COL,
+              ASH_LOAD_COL,
+              { key: "namespace_name", label: "namespace" },
+              { key: "object_name", label: "object_name" },
+            ],
+            "sec-ash-ns-obj"
+          )
+        );
+      }
 
       const byNsObjQuery = ashEnriched(groupAshByNamespaceObjectQuery(mergedAsh));
       const byNsObjQueryTitle = qF
-        ? `Full report — ASH by namespace + object_name (${byNsObjQuery.length} groups)`
-        : `Full report — ASH by namespace + object_name + query (${byNsObjQuery.length} groups)`;
+        ? `ASH by namespace + object_name (${byNsObjQuery.length} groups)`
+        : `ASH by namespace + object_name + query (${byNsObjQuery.length} groups)`;
       const byNsObjQueryColsAll = [
         ASH_SPS_COL,
         ASH_LOAD_COL,
@@ -1806,7 +1812,7 @@
       );
       panelAsh.appendChild(
         buildSortableTable(
-          "Full report — ASH samples by database",
+          "ASH samples by database",
           byDb,
           [ASH_SPS_COL, ASH_LOAD_COL, { key: "namespace_name", label: "namespace" }],
           "sec-ash-db"
@@ -1817,7 +1823,7 @@
       const byNode = ashEnriched(sumAshByNode(flat));
       panelAsh.appendChild(
         buildSortableTable(
-          "Full report — ASH samples by node",
+          "ASH samples by node",
           byNode,
           [
             ASH_SPS_COL,
@@ -1844,7 +1850,7 @@
       );
       panelAsh.appendChild(
         buildSortableTable(
-          "Full report — ASH by cloud + region + zone",
+          "ASH by cloud + region + zone",
           byCrz,
           [
             ASH_SPS_COL,

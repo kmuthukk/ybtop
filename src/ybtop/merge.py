@@ -141,17 +141,21 @@ def merge_ash_groups(
     def norm_qid(v: Any) -> Any:
         return None if v is None else str(v)
 
-    key_fields = (
-        "wait_event_component",
-        "wait_event",
-        "wait_event_type",
-        "wait_event_aux",
-        "ysql_dbid",
-    )
+    def ash_merge_object_key(r: dict[str, Any]) -> str:
+        v = _ash_display_object_name(r)
+        return "" if v is None else str(v)
+
     merged: dict[tuple[Any, ...], dict[str, Any]] = {}
     for rows in per_node:
         for r in rows:
-            k = (norm_qid(r.get("query_id")),) + tuple(r.get(f) for f in key_fields)
+            k = (
+                norm_qid(r.get("query_id")),
+                r.get("wait_event_component"),
+                r.get("wait_event"),
+                r.get("wait_event_type"),
+                ash_merge_object_key(r),
+                r.get("ysql_dbid"),
+            )
             if k not in merged:
                 merged[k] = {
                     "query_id": r.get("query_id"),
