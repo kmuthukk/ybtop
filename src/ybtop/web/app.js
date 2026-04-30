@@ -867,6 +867,19 @@
     return `${ns}\0${tn}`;
   }
 
+  /** Distribution reports count only tablets whose `state` is TABLET_DATA_READY (case-insensitive). */
+  function filterLocalTabletsDataReady(perNode) {
+    const want = "TABLET_DATA_READY";
+    const out = {};
+    Object.keys(perNode || {}).forEach((nid) => {
+      out[nid] = (perNode[nid] || []).filter((r) => {
+        const s = r && r.state != null ? String(r.state).trim().toUpperCase() : "";
+        return s === want;
+      });
+    });
+    return out;
+  }
+
   function flattenLocalTablets(perNode, topo) {
     const out = [];
     Object.keys(perNode || {}).forEach((nid) => {
@@ -1871,7 +1884,11 @@
       );
     }
 
-    const lt = doc.yb_local_tablets && doc.yb_local_tablets.per_node;
+    const ltRaw = doc.yb_local_tablets && doc.yb_local_tablets.per_node;
+    const ltHasAnyRows =
+      ltRaw &&
+      Object.keys(ltRaw).some((nid) => Array.isArray(ltRaw[nid]) && ltRaw[nid].length > 0);
+    const lt = ltRaw ? filterLocalTabletsDataReady(ltRaw) : null;
     const hasLocalTablets =
       lt &&
       Object.keys(lt).some((nid) => Array.isArray(lt[nid]) && lt[nid].length > 0);
@@ -1930,7 +1947,10 @@
       panelTablets.appendChild(
         el("p", {
           className: "app-panel-empty",
-          textContent: "No yb_local_tablets.per_node data in this snapshot.",
+          textContent:
+            ltHasAnyRows && !hasLocalTablets
+              ? "No tablets in TABLET_DATA_READY state in this snapshot's yb_local_tablets data."
+              : "No yb_local_tablets.per_node data in this snapshot.",
         })
       );
     }
