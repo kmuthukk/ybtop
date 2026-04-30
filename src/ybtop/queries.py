@@ -100,7 +100,8 @@ def ash_aggregated(
         s.samples,
         p.query::text AS query,
         NULLIF(BTRIM(COALESCE(lt.namespace_name::text, d.datname::text)), '') AS namespace_name,
-        NULLIF(BTRIM(lt.table_name::text), '') AS object_name
+        NULLIF(BTRIM(lt.table_name::text), '') AS object_name,
+        lt.table_id::text AS table_id
     FROM (
         SELECT
             query_id,
@@ -124,7 +125,8 @@ def ash_aggregated(
     LEFT JOIN LATERAL (
         SELECT
             lt1.namespace_name::text AS namespace_name,
-            lt1.table_name::text AS table_name
+            lt1.table_name::text AS table_name,
+            lt1.table_id::text AS table_id
         FROM yb_local_tablets lt1
         WHERE s.wait_event_aux IS NOT NULL
           AND s.wait_event_aux = SUBSTRING(lt1.tablet_id::text, 1, 15)
@@ -140,6 +142,7 @@ def yb_local_tablets_rows(conn: psycopg.Connection) -> list[dict[str, Any]]:
     SELECT
         tablet_id::text AS tablet_id,
         table_type::text AS table_type,
+        table_id::text AS table_id,
         namespace_name::text AS namespace_name,
         table_name::text AS table_name,
         partition_key_start::text AS partition_key_start,

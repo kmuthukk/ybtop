@@ -27,6 +27,47 @@
   const CLIPBOARD_SVG =
     '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
 
+  const MONTH_ABBR = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+  /** Snapshot instant in UTC for the nav line: YYYY/Mon/DD HH:MM:SS */
+  function formatSnapshotTakenHuman(isoUtc) {
+    if (isoUtc == null || String(isoUtc).trim() === "") return "";
+    const d = new Date(String(isoUtc));
+    if (Number.isNaN(d.getTime())) return "";
+    const y = d.getUTCFullYear();
+    const mon = MONTH_ABBR[d.getUTCMonth()];
+    const day = String(d.getUTCDate()).padStart(2, "0");
+    const hh = String(d.getUTCHours()).padStart(2, "0");
+    const mm = String(d.getUTCMinutes()).padStart(2, "0");
+    const ss = String(d.getUTCSeconds()).padStart(2, "0");
+    return `${y}/${mon}/${day} ${hh}:${mm}:${ss}`;
+  }
+
+  /** Older manifests may omit `utc`; filename uses UTC `ybtop.out.YYYYMMDD_HHMMSS.json`. */
+  function snapshotHumanFromFilename(file) {
+    const m = /^ybtop\.out\.(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})\.json$/i.exec(file || "");
+    if (!m) return "";
+    const y = Number(m[1]);
+    const mo = Number(m[2]);
+    const day = Number(m[3]);
+    const hh = Number(m[4]);
+    const mi = Number(m[5]);
+    const ss = Number(m[6]);
+    if (mo < 1 || mo > 12 || day < 1 || day > 31 || hh > 23 || mi > 59 || ss > 59) return "";
+    const mon = MONTH_ABBR[mo - 1];
+    return `${y}/${mon}/${String(day).padStart(2, "0")} ${String(hh).padStart(2, "0")}:${String(mi).padStart(2, "0")}:${String(ss).padStart(2, "0")}`;
+  }
+
+  function viewerNavLabelText(index, len, ent, docOrNull) {
+    const file = (ent && ent.file) || "";
+    const human =
+      formatSnapshotTakenHuman(docOrNull && docOrNull.generated_at_utc) ||
+      formatSnapshotTakenHuman(ent && ent.utc) ||
+      snapshotHumanFromFilename(file);
+    const suffix = human ? ` [${human}]` : "";
+    return `${index + 1} / ${len} — ${file}${suffix}`;
+  }
+
   let manifestEntries = [];
   let currentIndex = -1;
   let lastDoc = null;
@@ -35,8 +76,10 @@
 
   /** Left nav panel id; survives snapshot navigation. */
   let activeViewerSection = "pgss";
-  /** ASH `query_id` filter from URL or pg_stat link; cleared when leaving the ASH tab. */
+  /** ASH filters from URL / deeplinks; cleared when leaving the ASH tab. */
   let ashQueryIdFilter = null;
+  let ashNodeIdFilter = null;
+  let ashTableIdFilter = null;
 
   const VIEWER_SECTION_IDS = ["pgss", "ash", "tablets"];
 
@@ -84,8 +127,14 @@
     }
     const q = p.get("query");
     ashQueryIdFilter = q != null && String(q) !== "" ? String(q) : null;
+    const n = p.get("node");
+    ashNodeIdFilter = n != null && String(n).trim() !== "" ? String(n).trim() : null;
+    const tb = p.get("table_id");
+    ashTableIdFilter = tb != null && String(tb).trim() !== "" ? String(tb).trim() : null;
     if (activeViewerSection !== "ash") {
       ashQueryIdFilter = null;
+      ashNodeIdFilter = null;
+      ashTableIdFilter = null;
     }
   }
 
@@ -93,12 +142,20 @@
     const push = options && options.push;
     const p = new URLSearchParams();
     p.set("view", activeViewerSection);
-    if (activeViewerSection === "ash" && ashQueryIdFilter) {
-      p.set("query", ashQueryIdFilter);
+    if (activeViewerSection === "ash") {
+      if (ashQueryIdFilter) p.set("query", ashQueryIdFilter);
+      if (ashNodeIdFilter) p.set("node", ashNodeIdFilter);
+      if (ashTableIdFilter) p.set("table_id", ashTableIdFilter);
     }
     const qs = p.toString();
     const newUrl = `${window.location.pathname}${qs ? "?" + qs : ""}${window.location.hash || ""}`;
-    const st = { ybtop: true, view: activeViewerSection, query: ashQueryIdFilter || null };
+    const st = {
+      ybtop: true,
+      view: activeViewerSection,
+      query: ashQueryIdFilter || null,
+      node: ashNodeIdFilter || null,
+      table_id: ashTableIdFilter || null,
+    };
     if (push) {
       history.pushState(st, "", newUrl);
     } else {
@@ -108,9 +165,12 @@
 
   function setViewerSection(id) {
     if (!VIEWER_SECTION_IDS.includes(id)) return;
-    const hadFilter = !!ashQueryIdFilter;
+    const hadAshFilters =
+      !!ashQueryIdFilter || !!ashNodeIdFilter || !!ashTableIdFilter;
     if (id !== "ash") {
       ashQueryIdFilter = null;
+      ashNodeIdFilter = null;
+      ashTableIdFilter = null;
     }
     activeViewerSection = id;
     const app = document.getElementById("app");
@@ -129,7 +189,7 @@
       });
     }
     writeViewerStateToUrl();
-    if (lastDoc && id !== "ash" && hadFilter) {
+    if (lastDoc && id !== "ash" && hadAshFilters) {
       renderDoc(lastDoc, lastPrevDoc);
     } else {
       updateAshFilterToolbar();
@@ -592,16 +652,22 @@
     return obEmpty ? null : String(ob);
   }
 
-  /** Group ASH rows by displayed object identity (not wait_event_aux — many aux values share one object). */
-  function ashMergeKey(r) {
+  /** Stable tablet/table identity for merging ASH rows: prefer catalog table_id when resolved from tablets. */
+  function ashMergeTableKey(r) {
+    const tid = r.table_id;
+    if (tid != null && String(tid).trim() !== "") return String(tid).trim();
     const disp = ashDisplayObjectName(r);
-    const objKey = disp != null ? String(disp) : "";
+    return disp != null ? String(disp) : "";
+  }
+
+  /** Group ASH rows by displayed object identity + resolved table_id (many aux values share one tablet/table). */
+  function ashMergeKey(r) {
     return [
       normQid(r.query_id),
       r.wait_event_component,
       r.wait_event,
       r.wait_event_type,
-      objKey,
+      ashMergeTableKey(r),
       r.ysql_dbid == null ? "" : String(r.ysql_dbid),
     ].join("\0");
   }
@@ -621,6 +687,7 @@
             ysql_dbid: r.ysql_dbid != null && r.ysql_dbid !== undefined ? r.ysql_dbid : null,
             namespace_name: r.namespace_name != null ? r.namespace_name : null,
             object_name: r.object_name != null ? r.object_name : null,
+            table_id: r.table_id != null && r.table_id !== undefined ? r.table_id : null,
             samples: 0,
             query: r.query || "",
           });
@@ -630,6 +697,9 @@
         if (!m.query && r.query) m.query = r.query;
         m.namespace_name = m.namespace_name || r.namespace_name || null;
         m.object_name = m.object_name || r.object_name || null;
+        if ((m.table_id == null || m.table_id === "") && r.table_id != null && String(r.table_id).trim() !== "") {
+          m.table_id = r.table_id;
+        }
         if (m.ysql_dbid == null && r.ysql_dbid != null && r.ysql_dbid !== undefined) {
           m.ysql_dbid = r.ysql_dbid;
         }
@@ -673,12 +743,52 @@
     return out;
   }
 
+  function filterAshPerNodeByNodeId(perNode, nodeIdStr) {
+    const want = String(nodeIdStr || "").trim();
+    if (want === "") return perNode;
+    const rows = (perNode && perNode[want]) || [];
+    return rows.length ? { [want]: rows.slice() } : {};
+  }
+
+  function rowMatchesAshTableIdFilter(r, wantRaw) {
+    const want = String(wantRaw).trim();
+    if (want === "") return false;
+    const t = r.table_id;
+    return t != null && String(t).trim() === want;
+  }
+
+  function filterAshPerNodeByTableId(perNode, tableIdStr) {
+    const want = String(tableIdStr || "").trim();
+    if (want === "") return perNode;
+    const out = {};
+    Object.keys(perNode || {}).forEach((nid) => {
+      const rows = (perNode[nid] || []).filter((r) => rowMatchesAshTableIdFilter(r, want));
+      if (rows.length) out[nid] = rows;
+    });
+    return out;
+  }
+
+  function ashSubtitleNsObjectForTableId(doc, tableId) {
+    if (!doc || !tableId) return "";
+    const raw = doc.yb_active_session_history && doc.yb_active_session_history.per_node;
+    if (!raw) return "";
+    const f = filterAshPerNodeByTableId(raw, tableId);
+    const rows = mergeAsh(f);
+    const pick = rows.find((r) => r.namespace_name || r.object_name) || rows[0];
+    if (!pick) return "";
+    const ns = pick.namespace_name != null ? String(pick.namespace_name) : "";
+    const ob = pick.object_name != null ? String(pick.object_name) : "";
+    if (ns && ob) return `${ns} / ${ob}`;
+    return ns || ob || "";
+  }
+
   function getFirstQueryTextForFilter(doc, qid) {
     if (!doc) return null;
     const raw = doc.yb_active_session_history && doc.yb_active_session_history.per_node;
     if (!raw) return null;
     const f = filterAshPerNodeByQueryId(raw, qid);
-    for (const i = 0, keys = Object.keys(f); i < keys.length; i += 1) {
+    const keys = Object.keys(f);
+    for (let i = 0; i < keys.length; i += 1) {
       const rows = f[keys[i]] || [];
       for (let j = 0; j < rows.length; j += 1) {
         if (rows[j].query) return String(rows[j].query);
@@ -694,8 +804,9 @@
     if (want == null) return null;
     const st = doc && doc.pg_stat_statements && doc.pg_stat_statements.per_node;
     if (!st) return null;
-    for (const i = 0, keys = Object.keys(st); i < keys.length; i += 1) {
-      const rows = st[keys[i]] || [];
+    const stmtKeys = Object.keys(st);
+    for (let i = 0; i < stmtKeys.length; i += 1) {
+      const rows = st[stmtKeys[i]] || [];
       for (let j = 0; j < rows.length; j += 1) {
         const r = rows[j];
         if (normQid(r && r.queryid) === want && r.query) return String(r.query);
@@ -720,12 +831,54 @@
     return `${window.location.pathname}?${p.toString()}`;
   }
 
+  function buildAshNodeHref(nodeId) {
+    const p = new URLSearchParams();
+    p.set("view", "ash");
+    p.set("node", String(nodeId));
+    return `${window.location.pathname}?${p.toString()}`;
+  }
+
+  function buildAshTableIdHref(tableId) {
+    const p = new URLSearchParams();
+    p.set("view", "ash");
+    p.set("table_id", String(tableId));
+    return `${window.location.pathname}?${p.toString()}`;
+  }
+
   function navigateToAshForQueryId(qid) {
     const s = String(qid).trim();
     if (!s) return;
     ashQueryIdFilter = s;
+    ashNodeIdFilter = null;
+    ashTableIdFilter = null;
     activeViewerSection = "ash";
     /* pushState so the browser Back button returns to the prior tab (e.g. statements). */
+    writeViewerStateToUrl({ push: true });
+    if (lastDoc) {
+      renderDoc(lastDoc, lastPrevDoc);
+    }
+  }
+
+  function navigateToAshForNodeId(nodeId) {
+    const s = String(nodeId).trim();
+    if (!s) return;
+    ashNodeIdFilter = s;
+    ashQueryIdFilter = null;
+    ashTableIdFilter = null;
+    activeViewerSection = "ash";
+    writeViewerStateToUrl({ push: true });
+    if (lastDoc) {
+      renderDoc(lastDoc, lastPrevDoc);
+    }
+  }
+
+  function navigateToAshForTableId(tableId) {
+    const s = String(tableId).trim();
+    if (!s) return;
+    ashTableIdFilter = s;
+    ashQueryIdFilter = null;
+    ashNodeIdFilter = null;
+    activeViewerSection = "ash";
     writeViewerStateToUrl({ push: true });
     if (lastDoc) {
       renderDoc(lastDoc, lastPrevDoc);
@@ -790,26 +943,111 @@
       const q = r.query != null && r.query !== undefined ? String(r.query) : "";
       const k = JSON.stringify([nn, q]);
       if (!m.has(k)) {
-        m.set(k, { namespace_name: nn, query: q, samples: 0 });
+        m.set(k, {
+          namespace_name: nn,
+          query_id: r.query_id != null && r.query_id !== undefined ? r.query_id : null,
+          query: q,
+          samples: 0,
+        });
       }
-      m.get(k).samples += Number(r.samples) || 0;
+      const ent = m.get(k);
+      ent.samples += Number(r.samples) || 0;
+      if ((ent.query_id == null || ent.query_id === "") && r.query_id != null && r.query_id !== undefined) {
+        ent.query_id = r.query_id;
+      }
     });
     return Array.from(m.values()).sort((a, b) => b.samples - a.samples);
   }
 
-  /** Group merged ASH rows by namespace + object + query; sum samples. */
-  function groupAshByNamespaceObjectQuery(rows) {
+  /** Group merged ASH by pg_stat query id (query_id); sum samples. Rows without query_id bucket together. */
+  function groupAshByQueryId(rows) {
+    const m = new Map();
+    (rows || []).forEach((r) => {
+      const raw = r.query_id != null && r.query_id !== undefined ? r.query_id : null;
+      const k =
+        raw != null && String(raw).trim() !== "" ? String(raw).trim() : "\0__no_query_id__";
+      if (!m.has(k)) {
+        m.set(k, {
+          query_id: k === "\0__no_query_id__" ? null : raw,
+          namespace_name:
+            r.namespace_name != null && r.namespace_name !== undefined ? String(r.namespace_name) : "",
+          query: r.query != null && r.query !== undefined ? String(r.query) : "",
+          samples: 0,
+        });
+      }
+      const ent = m.get(k);
+      ent.samples += Number(r.samples) || 0;
+      if ((!ent.query || ent.query === "") && r.query) ent.query = String(r.query);
+      if ((!ent.namespace_name || ent.namespace_name === "") && r.namespace_name) {
+        ent.namespace_name = String(r.namespace_name);
+      }
+    });
+    return Array.from(m.values()).sort((a, b) => b.samples - a.samples);
+  }
+
+  /**
+   * Group merged ASH rows by namespace + tablet/table identity + optional query text.
+   * When `ignoreQueryInKey` is true (query_id–scoped UI), omit `query` from the key so DocDB rows
+   * (`query: null`) and YSQL rows with the statement text do not split into duplicate-looking groups.
+   */
+  function groupAshByNamespaceObjectQuery(rows, options) {
+    const ignoreQueryInKey = options && options.ignoreQueryInKey;
     const m = new Map();
     (rows || []).forEach((r) => {
       const nn = r.namespace_name != null && r.namespace_name !== undefined ? String(r.namespace_name) : "";
       const on = r.object_name != null && r.object_name !== undefined ? String(r.object_name) : "";
+      const tid =
+        r.table_id != null && r.table_id !== undefined && String(r.table_id).trim() !== ""
+          ? String(r.table_id).trim()
+          : "";
       const q = r.query != null && r.query !== undefined ? String(r.query) : "";
-      const k = JSON.stringify([nn, on, q]);
+      const dim = tid ? `tid:${tid}` : on;
+      const k = ignoreQueryInKey ? JSON.stringify([nn, dim]) : JSON.stringify([nn, dim, q]);
       if (!m.has(k)) {
-        m.set(k, { namespace_name: nn, object_name: on, query: q, samples: 0 });
+        m.set(k, {
+          namespace_name: nn,
+          object_name: on,
+          table_id: tid || null,
+          query: q,
+          query_id: r.query_id != null && r.query_id !== undefined ? r.query_id : null,
+          samples: 0,
+        });
       }
       const ent = m.get(k);
       ent.samples += Number(r.samples) || 0;
+      if ((!ent.object_name || ent.object_name === "") && on) ent.object_name = on;
+      if (!ent.table_id && tid) ent.table_id = tid;
+      if ((!ent.query || ent.query === "") && q) ent.query = q;
+      if ((ent.query_id == null || ent.query_id === "") && r.query_id != null && r.query_id !== undefined) {
+        ent.query_id = r.query_id;
+      }
+    });
+    return Array.from(m.values()).sort((a, b) => b.samples - a.samples);
+  }
+
+  /** Namespace × object/table buckets for Top-50 charts (groups by table_id when known). */
+  function ashAggregateNsObjectBuckets(rows) {
+    const m = new Map();
+    (rows || []).forEach((r) => {
+      const nn = r.namespace_name != null && r.namespace_name !== undefined ? String(r.namespace_name) : "";
+      const tid =
+        r.table_id != null && r.table_id !== undefined && String(r.table_id).trim() !== ""
+          ? String(r.table_id).trim()
+          : "";
+      const on = r.object_name != null && r.object_name !== undefined ? String(r.object_name) : "";
+      const k = tid ? `${nn}\0tid:${tid}` : `${nn}\0${on}`;
+      if (!m.has(k)) {
+        m.set(k, {
+          namespace_name: nn,
+          object_name: on,
+          table_id: tid || null,
+          samples: 0,
+        });
+      }
+      const ent = m.get(k);
+      ent.samples += Number(r.samples) || 0;
+      if ((!ent.object_name || ent.object_name === "") && on) ent.object_name = on;
+      if (!ent.table_id && tid) ent.table_id = tid;
     });
     return Array.from(m.values()).sort((a, b) => b.samples - a.samples);
   }
@@ -1271,7 +1509,7 @@
     }
   }
 
-  function buildSortableTable(title, rows, columns, subsectionId) {
+  function buildSortableTable(title, rows, columns, subsectionId, ashCellOpts) {
     const section = el("section", { className: "ybtop-section" });
     const body = el("div", { className: "section-body" });
     if (subsectionId) {
@@ -1372,6 +1610,62 @@
                 ? row.rows_per_call
                 : row.avg_rows_per_call;
             td.textContent = raw === null || raw === undefined ? "" : String(raw);
+          } else if (
+            ashCellOpts &&
+            ashCellOpts.ashQueryIdLinks &&
+            col.key === "query_id" &&
+            row.query_id != null &&
+            String(row.query_id) !== ""
+          ) {
+            applyMonoTableCellClass(td, col.key);
+            const a = el("a", {
+              className: "ash-queryid-deeplink",
+              href: buildAshQueryHref(row.query_id),
+              textContent: v === null || v === undefined ? "" : String(v),
+            });
+            a.addEventListener("click", (e) => {
+              e.preventDefault();
+              navigateToAshForQueryId(row.query_id);
+            });
+            td.appendChild(a);
+          } else if (
+            ashCellOpts &&
+            ashCellOpts.ashNodeLinks &&
+            col.key === "node_id" &&
+            v != null &&
+            String(v) !== ""
+          ) {
+            applyMonoTableCellClass(td, col.key);
+            const a = el("a", {
+              className: "ash-queryid-deeplink",
+              href: buildAshNodeHref(v),
+              textContent: String(v),
+            });
+            a.addEventListener("click", (e) => {
+              e.preventDefault();
+              navigateToAshForNodeId(v);
+            });
+            td.appendChild(a);
+          } else if (
+            ashCellOpts &&
+            ashCellOpts.ashObjectLinks &&
+            col.key === "object_name" &&
+            row.table_id != null &&
+            String(row.table_id).trim() !== ""
+          ) {
+            applyMonoTableCellClass(td, col.key);
+            const disp = v === null || v === undefined ? "" : String(v);
+            const tid = row.table_id;
+            const a = el("a", {
+              className: "ash-queryid-deeplink",
+              href: buildAshTableIdHref(tid),
+              textContent: disp,
+            });
+            a.addEventListener("click", (e) => {
+              e.preventDefault();
+              navigateToAshForTableId(tid);
+            });
+            td.appendChild(a);
           } else {
             applyMonoTableCellClass(td, col.key);
             td.textContent = v === null || v === undefined ? "" : String(v);
@@ -1401,6 +1695,7 @@
     const opt = tableOptions || {};
     const unifyStatementHeaders = !!opt.unifyStatementHeaders;
     const pgssAshLinks = !!opt.pgssAshLinks;
+    const ashCellOpts = opt.ashCellOpts;
     const section = el("section", { className: "ybtop-section" });
     const h2 = el("h2", { className: "section-title" });
     const body = el("div", { className: "section-body" });
@@ -1543,6 +1838,62 @@
                 ? row.rows_per_call
                 : row.avg_rows_per_call;
             td.textContent = raw === null || raw === undefined ? "" : String(raw);
+          } else if (
+            ashCellOpts &&
+            ashCellOpts.ashQueryIdLinks &&
+            col.key === "query_id" &&
+            row.query_id != null &&
+            String(row.query_id) !== ""
+          ) {
+            applyMonoTableCellClass(td, col.key);
+            const a = el("a", {
+              className: "ash-queryid-deeplink",
+              href: buildAshQueryHref(row.query_id),
+              textContent: v === null || v === undefined ? "" : String(v),
+            });
+            a.addEventListener("click", (e) => {
+              e.preventDefault();
+              navigateToAshForQueryId(row.query_id);
+            });
+            td.appendChild(a);
+          } else if (
+            ashCellOpts &&
+            ashCellOpts.ashNodeLinks &&
+            col.key === "node_id" &&
+            v != null &&
+            String(v) !== ""
+          ) {
+            applyMonoTableCellClass(td, col.key);
+            const a = el("a", {
+              className: "ash-queryid-deeplink",
+              href: buildAshNodeHref(v),
+              textContent: String(v),
+            });
+            a.addEventListener("click", (e) => {
+              e.preventDefault();
+              navigateToAshForNodeId(v);
+            });
+            td.appendChild(a);
+          } else if (
+            ashCellOpts &&
+            ashCellOpts.ashObjectLinks &&
+            col.key === "object_name" &&
+            row.table_id != null &&
+            String(row.table_id).trim() !== ""
+          ) {
+            applyMonoTableCellClass(td, col.key);
+            const disp = v === null || v === undefined ? "" : String(v);
+            const tid = row.table_id;
+            const a = el("a", {
+              className: "ash-queryid-deeplink",
+              href: buildAshTableIdHref(tid),
+              textContent: disp,
+            });
+            a.addEventListener("click", (e) => {
+              e.preventDefault();
+              navigateToAshForTableId(tid);
+            });
+            td.appendChild(a);
           } else {
             applyMonoTableCellClass(td, col.key);
             td.textContent = v === null || v === undefined ? "" : String(v);
@@ -1712,7 +2063,36 @@
     if (ash) {
       panelAsh.appendChild(ashWindowActivityBanner(doc));
       const qF = ashQueryIdFilter;
-      const ashData = qF ? filterAshPerNodeByQueryId(ash, qF) : ash;
+      const nodeF = ashNodeIdFilter;
+      const tableF = ashTableIdFilter;
+      let ashData = ash;
+      if (nodeF) ashData = filterAshPerNodeByNodeId(ashData, nodeF);
+      if (qF) ashData = filterAshPerNodeByQueryId(ashData, qF);
+      if (tableF) ashData = filterAshPerNodeByTableId(ashData, tableF);
+
+      if (nodeF) {
+        const bn = el("div", { className: "ash-mode-banner" });
+        bn.appendChild(
+          el("div", {
+            className: "ash-mode-banner-title",
+            textContent: `Showing ASH data for node_id=${nodeF}:`,
+          })
+        );
+        panelAsh.appendChild(bn);
+      }
+      if (tableF) {
+        const sub = ashSubtitleNsObjectForTableId(doc, tableF);
+        const bn = el("div", { className: "ash-mode-banner" });
+        bn.appendChild(
+          el("div", {
+            className: "ash-mode-banner-title",
+            textContent: sub
+              ? `Showing ASH data for table_id=${tableF} (${sub}):`
+              : `Showing ASH data for table_id=${tableF}:`,
+          })
+        );
+        panelAsh.appendChild(bn);
+      }
       if (qF) {
         const qText = getQueryTextForToolbar(doc, qF) || "";
         const note = el("div", { className: "ash-mode-banner" });
@@ -1749,42 +2129,58 @@
         { key: "query", label: "query" },
       ];
       const ashMainCols = qF ? ashColumnsWithoutQueryIdAndQuery(ashMainColsAll) : ashMainColsAll;
+      const ashReportCellOpts = { ashObjectLinks: true, ashQueryIdLinks: true };
+      const ashPaginatedOpts = { ashCellOpts: ashReportCellOpts };
       panelAsh.appendChild(
         buildSortablePaginatedTable(
           "Top 50 — ASH by samples",
           mergedAshL,
           ashMainCols,
           50,
-          "sec-ash-main"
+          "sec-ash-main",
+          undefined,
+          ashPaginatedOpts
         )
       );
 
-      if (!qF) {
+      if (tableF) {
+        const byQueryId = ashEnriched(groupAshByQueryId(mergedAsh));
+        panelAsh.appendChild(
+          buildSortableTable(
+            `ASH by query (${byQueryId.length} groups)`,
+            byQueryId,
+            [
+              ASH_SPS_COL,
+              ASH_LOAD_COL,
+              { key: "namespace_name", label: "namespace" },
+              { key: "query_id", label: "query_id" },
+              { key: "query", label: "query" },
+            ],
+            "sec-ash-by-query-id",
+            ashReportCellOpts
+          )
+        );
+      }
+
+      if (!qF && !tableF) {
         const byNsQuery = ashEnriched(groupAshByNamespaceQuery(mergedAsh));
         const byNsQueryColsAll = [
           ASH_SPS_COL,
           ASH_LOAD_COL,
           { key: "namespace_name", label: "namespace" },
+          { key: "query_id", label: "query_id" },
           { key: "query", label: "query" },
         ];
         const byNsQueryCols = byNsQueryColsAll;
         const byNsQueryTitle = `ASH by namespace + query (${byNsQuery.length} groups)`;
         panelAsh.appendChild(
-          buildSortableTable(byNsQueryTitle, byNsQuery, byNsQueryCols, "sec-ash-ns-q")
+          buildSortableTable(byNsQueryTitle, byNsQuery, byNsQueryCols, "sec-ash-ns-q", ashReportCellOpts)
         );
 
-        const byNsObj = groupSum(mergedAsh, (r) => {
-          const nn = r.namespace_name || "";
-          const on = r.object_name || "";
-          return `${nn}\0${on}`;
-        }).map((x) => ({
-          namespace_name: String(x.key).split("\0")[0],
-          object_name: String(x.key).split("\0")[1],
-          samples: x.samples,
-        }));
+        const byNsObjBuckets = ashAggregateNsObjectBuckets(mergedAsh);
         const byNsObjTop = withAshLoadPercent(
-          withAshSessionsPerSec(byNsObj.slice(0, 50), ashIntervalSec),
-          byNsObj
+          withAshSessionsPerSec(byNsObjBuckets.slice(0, 50), ashIntervalSec),
+          byNsObjBuckets
         );
         panelAsh.appendChild(
           buildSortableTable(
@@ -1796,26 +2192,79 @@
               { key: "namespace_name", label: "namespace" },
               { key: "object_name", label: "object_name" },
             ],
-            "sec-ash-ns-obj"
+            "sec-ash-ns-obj",
+            ashReportCellOpts
           )
         );
       }
 
-      const byNsObjQuery = ashEnriched(groupAshByNamespaceObjectQuery(mergedAsh));
-      const byNsObjQueryTitle = qF
-        ? `ASH by namespace + object_name (${byNsObjQuery.length} groups)`
-        : `ASH by namespace + object_name + query (${byNsObjQuery.length} groups)`;
-      const byNsObjQueryColsAll = [
-        ASH_SPS_COL,
-        ASH_LOAD_COL,
-        { key: "namespace_name", label: "namespace" },
-        { key: "object_name", label: "object_name" },
-        { key: "query", label: "query" },
-      ];
-      const byNsObjQueryCols = qF ? ashColumnsWithoutQueryIdAndQuery(byNsObjQueryColsAll) : byNsObjQueryColsAll;
-      panelAsh.appendChild(
-        buildSortableTable(byNsObjQueryTitle, byNsObjQuery, byNsObjQueryCols, "sec-ash-ns-obj-q")
-      );
+      if (!tableF) {
+        const byNsObjQuery = ashEnriched(
+          groupAshByNamespaceObjectQuery(mergedAsh, { ignoreQueryInKey: !!qF })
+        );
+        const byNsObjQueryTitle = qF
+          ? `ASH by namespace + object_name (${byNsObjQuery.length} groups)`
+          : `ASH by namespace + object_name + query (${byNsObjQuery.length} groups)`;
+        const byNsObjQueryColsAll = [
+          ASH_SPS_COL,
+          ASH_LOAD_COL,
+          { key: "namespace_name", label: "namespace" },
+          { key: "object_name", label: "object_name" },
+          { key: "query_id", label: "query_id" },
+          { key: "query", label: "query" },
+        ];
+        const byNsObjQueryCols = qF ? ashColumnsWithoutQueryIdAndQuery(byNsObjQueryColsAll) : byNsObjQueryColsAll;
+        panelAsh.appendChild(
+          buildSortableTable(byNsObjQueryTitle, byNsObjQuery, byNsObjQueryCols, "sec-ash-ns-obj-q", ashReportCellOpts)
+        );
+      }
+
+      const flat = flattenAsh(ashData, topo);
+      if (!nodeF) {
+        const byNode = ashEnriched(sumAshByNode(flat));
+        panelAsh.appendChild(
+          buildSortableTable(
+            "ASH samples by node",
+            byNode,
+            [
+              ASH_SPS_COL,
+              ASH_LOAD_COL,
+              { key: "node_id", label: "node_id" },
+              { key: "cloud", label: "cloud" },
+              { key: "region", label: "region" },
+              { key: "zone", label: "zone" },
+            ],
+            "sec-ash-node",
+            { ashNodeLinks: true }
+          )
+        );
+
+        const byCrz = ashEnriched(
+          groupSum(flat, (r) => `${r.cloud}\t${r.region}\t${r.zone}`).map((x) => {
+            const parts = String(x.key).split("\t");
+            return {
+              cloud: parts[0] != null ? parts[0] : "",
+              region: parts[1] != null ? parts[1] : "",
+              zone: parts[2] != null ? parts[2] : "",
+              samples: x.samples,
+            };
+          })
+        );
+        panelAsh.appendChild(
+          buildSortableTable(
+            "ASH by cloud + region + zone",
+            byCrz,
+            [
+              ASH_SPS_COL,
+              ASH_LOAD_COL,
+              { key: "cloud", label: "cloud" },
+              { key: "region", label: "region" },
+              { key: "zone", label: "zone" },
+            ],
+            "sec-ash-crz"
+          )
+        );
+      }
 
       const byDb = ashEnriched(
         groupSum(mergedAsh, (r) => String(r.namespace_name || "(none)")).map((x) => ({
@@ -1829,50 +2278,6 @@
           byDb,
           [ASH_SPS_COL, ASH_LOAD_COL, { key: "namespace_name", label: "namespace" }],
           "sec-ash-db"
-        )
-      );
-
-      const flat = flattenAsh(ashData, topo);
-      const byNode = ashEnriched(sumAshByNode(flat));
-      panelAsh.appendChild(
-        buildSortableTable(
-          "ASH samples by node",
-          byNode,
-          [
-            ASH_SPS_COL,
-            ASH_LOAD_COL,
-            { key: "node_id", label: "node_id" },
-            { key: "cloud", label: "cloud" },
-            { key: "region", label: "region" },
-            { key: "zone", label: "zone" },
-          ],
-          "sec-ash-node"
-        )
-      );
-
-      const byCrz = ashEnriched(
-        groupSum(flat, (r) => `${r.cloud}\t${r.region}\t${r.zone}`).map((x) => {
-          const parts = String(x.key).split("\t");
-          return {
-            cloud: parts[0] != null ? parts[0] : "",
-            region: parts[1] != null ? parts[1] : "",
-            zone: parts[2] != null ? parts[2] : "",
-            samples: x.samples,
-          };
-        })
-      );
-      panelAsh.appendChild(
-        buildSortableTable(
-          "ASH by cloud + region + zone",
-          byCrz,
-          [
-            ASH_SPS_COL,
-            ASH_LOAD_COL,
-            { key: "cloud", label: "cloud" },
-            { key: "region", label: "region" },
-            { key: "zone", label: "zone" },
-          ],
-          "sec-ash-crz"
         )
       );
     } else {
@@ -1974,7 +2379,7 @@
     currentIndex = index;
     const ent = manifestEntries[index];
     const label = document.getElementById("nav-label");
-    label.textContent = `${index + 1} / ${manifestEntries.length} — ${ent.file || ""}`;
+    label.textContent = viewerNavLabelText(index, manifestEntries.length, ent, null);
 
     document.getElementById("btn-prev").disabled = index <= 0;
     document.getElementById("btn-next").disabled = index >= manifestEntries.length - 1;
@@ -1994,7 +2399,8 @@
       ]);
       app.textContent = "";
       renderDoc(doc, prevDoc);
-      setStatus("OK", false);
+      label.textContent = viewerNavLabelText(index, manifestEntries.length, ent, doc);
+      setStatus("", false);
     } catch (e) {
       const navErr = document.getElementById("app-nav");
       if (navErr) navErr.textContent = "";

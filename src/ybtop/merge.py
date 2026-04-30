@@ -142,6 +142,9 @@ def merge_ash_groups(
         return None if v is None else str(v)
 
     def ash_merge_object_key(r: dict[str, Any]) -> str:
+        tid = r.get("table_id")
+        if tid is not None and str(tid).strip() != "":
+            return str(tid).strip()
         v = _ash_display_object_name(r)
         return "" if v is None else str(v)
 
@@ -166,6 +169,7 @@ def merge_ash_groups(
                     "ysql_dbid": r.get("ysql_dbid"),
                     "namespace_name": r.get("namespace_name"),
                     "object_name": r.get("object_name"),
+                    "table_id": r.get("table_id"),
                     "samples": 0,
                     "query": r.get("query"),
                 }
@@ -174,6 +178,8 @@ def merge_ash_groups(
             m["query"] = m.get("query") or r.get("query")
             m["namespace_name"] = m.get("namespace_name") or r.get("namespace_name")
             m["object_name"] = m.get("object_name") or r.get("object_name")
+            if m.get("table_id") is None and r.get("table_id") is not None:
+                m["table_id"] = r.get("table_id")
             if m.get("ysql_dbid") is None and r.get("ysql_dbid") is not None:
                 m["ysql_dbid"] = r.get("ysql_dbid")
     out: list[dict[str, Any]] = []
@@ -187,6 +193,8 @@ def merge_ash_groups(
             ("wait_event_type", m.get("wait_event_type")),
             ("wait_event", m.get("wait_event")),
         ]
+        if m.get("table_id") is not None:
+            parts.insert(3, ("table_id", m.get("table_id")))
         if m.get("ysql_dbid") is not None:
             parts.append(("ysql_dbid", m.get("ysql_dbid")))
         if include_namespace_objname:
