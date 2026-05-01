@@ -2,6 +2,23 @@
 
 All notable functional changes to **ybtop** are listed here by release. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) (newest first).
 
+## [0.1.8]
+
+### Added
+
+- **ASH load distribution (browser):** On multi-node clusters (and when not node-scoped), several ASH tables include **Load Distribution % (across N nodes)**—per-node sample share (top entries, with fast hover tooltips). The column is omitted for **ASH by cloud + region + zone** where it is redundant.
+- **Stable merge keys for ASH rollups:** Merged ASH rows carry an internal **`ash_merge_key`**; flat per-node rows carry **`ash_flat_bucket_key`** and (with **`pg_stat`** query text) align bucket keys so load distribution and namespace/query rollups resolve correctly.
+
+### Changed
+
+- **ASH snapshot SQL / JSON:** `ash_aggregated` no longer joins **`pg_stat_statements`** for SQL text; **`merge_ash_groups`** no longer emits a **`query`** field on merged ASH rows. The viewer resolves statement text from **`pg_stat_statements.per_node`** by **`query_id`** (including for **flat** per-node rows used in rollups), so **ASH by namespace + query** and **ASH by namespace + object_name + query** stay consistent.
+- **`yb_local_tablets` collection:** Snapshot tablet rows exclude **`state = 'TABLET_DATA_TOMBSTONED'`** (tombstoned tablets are not pulled). The ASH lateral join to **`yb_local_tablets`** is unchanged.
+- **Browser viewer (ASH):** Scoped filters (**`node`**, **`table_id`**, **`query`**) use clearer banners and typography; **`wait_event_component`** column label is **component**; **`table_id` subtitles** can fall back to **`yb_local_tablets`** when ASH lacks a matching row.
+- **Browser viewer (tablet distribution):** **`table_name`** links open ASH scoped by **`table_id`**; tables use **`width: auto`** with horizontal scroll on narrow panels.
+- **Browser viewer (statements):** Numeric columns (**calls**, **time (ms)**, **time %**, **mean_ms**, per-call metrics) are right-aligned and use a fixed-width font where appropriate; **time (ms)** and **mean_ms** always show two decimal places; **rows/call** and DocDB **\*/call** columns use one decimal for alignment.
+- **Browser viewer (ASH metrics):** **Active Sessions / sec** uses consistent fractional formatting (including values below 1); **Active Sessions / sec** and **Load %** are right-aligned; **query** cells show the full-SQL tooltip only when the preview is ellipsized (dotted underline + **`cursor: help`** when truncated).
+- **Load distribution UX:** Custom tooltip positioning (no laggy native **`title`**); bogus **0%** chips from topology/node-id mismatches are avoided; **Top 50 — ASH by samples** uses a direct per-bucket scan so node maps match merged buckets.
+
 ## [0.1.7]
 
 ### Added
