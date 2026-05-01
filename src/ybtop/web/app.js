@@ -971,16 +971,23 @@
     }
   }
 
+  /**
+   * Per-node ASH rows with topology fields and display object_name.
+   * `ash_flat_bucket_key` is ashMergeKey(snapshot row) before object_name display normalization so per-node
+   * accumulation matches mergeAsh buckets (normalize-only differs from merge key).
+   */
   function flattenAsh(perNode, topo) {
     const out = [];
     Object.keys(perNode || {}).forEach((nid) => {
       const t = (topo && topo[nid]) || {};
       (perNode[nid] || []).forEach((r) => {
+        const ash_flat_bucket_key = ashMergeKey(r);
         const row = Object.assign({}, r, {
           node_id: nid,
           cloud: t.cloud || "",
           region: t.region || "",
           zone: t.zone || "",
+          ash_flat_bucket_key,
         });
         row.object_name = ashDisplayObjectName(row);
         out.push(row);
@@ -1031,6 +1038,28 @@
     return Object.keys(ashPerNode || {}).length;
   }
 
+  /**
+   * Per-node sample sums for one merge bucket: flat rows whose `ash_flat_bucket_key` (or ashMergeKey fallback)
+   * equals `wantKey`. Scans flatRows so lookup does not depend on Map key identity.
+   */
+  function buildNodeSampleMapForMergeKey(flatRows, wantKey) {
+    if (wantKey == null || String(wantKey) === "") return null;
+    const want = String(wantKey);
+    const nm = new Map();
+    (flatRows || []).forEach((r) => {
+      const fk =
+        r.ash_flat_bucket_key != null && String(r.ash_flat_bucket_key) !== ""
+          ? String(r.ash_flat_bucket_key)
+          : ashMergeKey(r);
+      if (fk !== want) return;
+      const nid = r.node_id != null && r.node_id !== undefined ? String(r.node_id).trim() : "";
+      if (!nid) return;
+      const add = Number(r.samples) || 0;
+      nm.set(nid, (nm.get(nid) || 0) + add);
+    });
+    return nm;
+  }
+
   /** Flat ASH rows grouped by bucketKeyFn → node_id → sample sum. */
   function accumulateAshBucketNodeSamples(flatRows, bucketKeyFn) {
     const out = new Map();
@@ -1066,8 +1095,25 @@
     };
   }
 
-  function attachAshNodeLoadDistribution(rows, flatRows, bucketKeyFn, enabled) {
+  /**
+   * @param {boolean} [useMergeBucketScan] — Top-level merged ASH rows: scan flat rows by `ash_merge_key` ==
+   *   `ash_flat_bucket_key` (avoids Map lookup / key recomputation mismatches). Other rollups keep false.
+   */
+  function attachAshNodeLoadDistribution(rows, flatRows, bucketKeyFn, enabled, useMergeBucketScan) {
     if (!enabled || !rows || !flatRows || typeof bucketKeyFn !== "function") return rows || [];
+    if (useMergeBucketScan) {
+      return rows.map((r) => {
+        const bk =
+          r.ash_merge_key != null && String(r.ash_merge_key) !== ""
+            ? String(r.ash_merge_key)
+            : bucketKeyFn(r);
+        const nodeMap = buildNodeSampleMapForMergeKey(flatRows, bk);
+        return {
+          ...r,
+          ash_node_load_distribution: summarizeAshNodeLoadPct(nodeMap),
+        };
+      });
+    }
     const acc = accumulateAshBucketNodeSamples(flatRows, bucketKeyFn);
     return rows.map((r) => {
       const bk =
@@ -2630,14 +2676,16 @@
       }
       const ashClusterNodes = ashSnapshotClusterNodeCount(doc, ash);
       const ashShowNodeLoadDist = ashClusterNodes > 1 && !nodeF;
-      const flatAsh = flattenAsh(ashData, topo);
+      /* Same pg_stat query text as merged rows so namespace+query / ns+object+query load-dist keys match. */
+      const flatAsh = enrichAshRowsQueryFromPgStat(doc, flattenAsh(ashData, topo));
 
       let mergedAsh = enrichAshRowsQueryFromPgStat(doc, mergeAsh(ashData));
       mergedAsh = attachAshNodeLoadDistribution(
         mergedAsh,
         flatAsh,
         ashMergeKey,
-        ashShowNodeLoadDist
+        ashShowNodeLoadDist,
+        true
       );
 
       const ashIntervalSec = ashWindowIntervalSeconds(doc);
