@@ -1628,7 +1628,7 @@
     return _hoverTipEl;
   }
 
-  /** Shared layout for SQL popup and short node_id hover labels (viewport coords via translate3d). */
+  /** Clear inline placement between shows (both SQL and quick hovers). */
   function resetTooltipPopupMotion(tip) {
     if (!tip) return;
     tip.style.transform = "";
@@ -1648,10 +1648,10 @@
     resetTooltipPopupMotion(tip);
     tip.textContent = textContent;
     tip.setAttribute("aria-hidden", "false");
-    tip.style.left = "0px";
-    tip.style.top = "0px";
+    tip.style.position = "fixed";
     tip.style.right = "auto";
     tip.style.bottom = "auto";
+    tip.style.transform = "none";
     tip.style.maxWidth = `${maxW}px`;
 
     let tx = Number.isFinite(ax) ? ax : margin;
@@ -1660,6 +1660,9 @@
     }
 
     let ty = Number.isFinite(ayBottom) ? ayBottom - 1 : margin;
+
+    tip.style.left = "-99999px";
+    tip.style.top = "0px";
 
     tip.classList.add("query-tooltip-popup-visible");
 
@@ -1682,18 +1685,77 @@
       }
     }
 
-    tip.style.transform = `translate3d(${Math.round(tx)}px, ${Math.round(ty)}px, 0)`;
+    tip.style.left = `${Math.round(tx)}px`;
+    tip.style.top = `${Math.round(ty)}px`;
   }
 
-  function positionAndShowHoverTooltip(anchorRect, text) {
-    positionAndShowTooltipPopup(getHoverTooltipEl(), anchorRect, String(text || ""));
+  /**
+   * Node-id / chip hovers: place by pointer using measured box size (not assumed max width).
+   * Repositions on mousemove while visible so the label stays next to the cursor.
+   */
+  function positionAndShowHoverTooltipNearCursor(clientX, clientY, text) {
+    const tip = getHoverTooltipEl();
+    const margin = 8;
+    const offset = 12;
+    const txt = String(text || "");
+
+    resetTooltipPopupMotion(tip);
+    tip.textContent = txt;
+    tip.setAttribute("aria-hidden", "false");
+    tip.style.position = "fixed";
+    tip.style.right = "auto";
+    tip.style.bottom = "auto";
+    tip.style.transform = "none";
+
+    tip.style.left = "-99999px";
+    tip.style.top = "0px";
+
+    tip.classList.add("query-tooltip-popup-visible");
+
+    let cx = Number(clientX);
+    let cy = Number(clientY);
+    if (!Number.isFinite(cx)) cx = margin + offset;
+    if (!Number.isFinite(cy)) cy = margin + offset;
+
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+
+    const tw = tip.offsetWidth;
+    const th = tip.offsetHeight;
+
+    let left = cx + offset;
+    let top = cy + offset;
+
+    if (left + tw > vw - margin) {
+      left = vw - tw - margin;
+    }
+    if (top + th > vh - margin) {
+      top = cy - th - offset;
+    }
+    if (left < margin) left = margin;
+    if (top < margin) top = margin;
+
+    tip.style.left = `${Math.round(left)}px`;
+    tip.style.top = `${Math.round(top)}px`;
   }
 
   /** Fast custom tooltip (node_id); avoids slow native title= delay. */
   function wireQuickNodeIdTooltip(anchorEl, nodeId) {
     const t = String(nodeId || "").trim();
     if (!t || !anchorEl) return;
-    anchorEl.addEventListener("mouseenter", () => {
+    let tipTrackX = 0;
+    let tipTrackY = 0;
+    function onTipPointerMove(e) {
+      tipTrackX = e.clientX;
+      tipTrackY = e.clientY;
+      if (_hoverTipEl && _hoverTipEl.classList.contains("query-tooltip-popup-visible")) {
+        positionAndShowHoverTooltipNearCursor(tipTrackX, tipTrackY, t);
+      }
+    }
+    anchorEl.addEventListener("mouseenter", (e) => {
+      tipTrackX = e.clientX;
+      tipTrackY = e.clientY;
+      document.addEventListener("mousemove", onTipPointerMove, { passive: true });
       hideQueryTooltipImmediate();
       if (_hoverTipHideTimer) {
         clearTimeout(_hoverTipHideTimer);
@@ -1704,12 +1766,13 @@
       }
       _hoverTipShowTimer = setTimeout(() => {
         requestAnimationFrame(() => {
-          positionAndShowHoverTooltip(anchorEl.getBoundingClientRect(), t);
+          positionAndShowHoverTooltipNearCursor(tipTrackX, tipTrackY, t);
         });
         _hoverTipShowTimer = null;
       }, HOVER_NODE_TIP_SHOW_MS);
     });
     anchorEl.addEventListener("mouseleave", () => {
+      document.removeEventListener("mousemove", onTipPointerMove);
       if (_hoverTipShowTimer) {
         clearTimeout(_hoverTipShowTimer);
         _hoverTipShowTimer = null;
@@ -1795,11 +1858,9 @@
 
   /**
    * Show SQL hover tooltip only when the preview is truncated (ellipsis).
-   * Toggles .query-preview--truncated for cursor help; optional
-   * .query-preview--trunc-underline adds the dotted underline (ASH-linked previews).
+   * Toggles .query-preview--truncated for cursor help (no dotted underline).
    */
-  function wireQueryPreviewHoverTooltip(wrap, textEl, fullText, opts) {
-    const truncationHintUnderline = !!(opts && opts.truncationHintUnderline);
+  function wireQueryPreviewHoverTooltip(wrap, textEl, fullText) {
     let listenersAttached = false;
 
     function onEnter() {
@@ -1834,7 +1895,6 @@
     function sync() {
       const truncated = isTruncated();
       textEl.classList.toggle("query-preview--truncated", truncated);
-      textEl.classList.toggle("query-preview--trunc-underline", truncated && truncationHintUnderline);
       if (truncated && !listenersAttached) {
         wrap.addEventListener("mouseenter", onEnter);
         wrap.addEventListener("mouseleave", onLeave);
@@ -1879,7 +1939,7 @@
       });
     });
     wrap.appendChild(btn);
-    wireQueryPreviewHoverTooltip(wrap, span, full, { truncationHintUnderline: false });
+    wireQueryPreviewHoverTooltip(wrap, span, full);
     td.appendChild(wrap);
   }
 
@@ -1911,7 +1971,7 @@
       });
     });
     wrap.appendChild(btn);
-    wireQueryPreviewHoverTooltip(wrap, a, full, { truncationHintUnderline: true });
+    wireQueryPreviewHoverTooltip(wrap, a, full);
     td.appendChild(wrap);
   }
 

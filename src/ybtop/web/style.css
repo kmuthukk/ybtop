@@ -458,10 +458,6 @@ tr:nth-child(even) {
   cursor: help;
 }
 
-.query-preview--trunc-underline {
-  border-bottom: 1px dotted var(--yb-muted);
-}
-
 /* Full SQL on hover (replaces limited native title= tooltips) */
 .query-tooltip-popup {
   position: fixed;
@@ -491,9 +487,11 @@ tr:nth-child(even) {
   opacity: 1;
 }
 
-/* Short node_id hovers: don't intercept mouse (no copy UI). */
+/* Short node_id hovers: don't intercept mouse (no copy UI); single line for stable width. */
 .yb-hover-tooltip-popup {
   pointer-events: none;
+  white-space: nowrap;
+  max-width: min(92vw, 52rem);
 }
 
 .icon-copy-btn {
