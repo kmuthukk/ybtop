@@ -1795,9 +1795,11 @@
 
   /**
    * Show SQL hover tooltip only when the preview is truncated (ellipsis).
-   * Toggles .query-preview--truncated for dotted underline + cursor help.
+   * Toggles .query-preview--truncated for cursor help; optional
+   * .query-preview--trunc-underline adds the dotted underline (ASH-linked previews).
    */
-  function wireQueryPreviewHoverTooltip(wrap, textEl, fullText) {
+  function wireQueryPreviewHoverTooltip(wrap, textEl, fullText, opts) {
+    const truncationHintUnderline = !!(opts && opts.truncationHintUnderline);
     let listenersAttached = false;
 
     function onEnter() {
@@ -1832,6 +1834,7 @@
     function sync() {
       const truncated = isTruncated();
       textEl.classList.toggle("query-preview--truncated", truncated);
+      textEl.classList.toggle("query-preview--trunc-underline", truncated && truncationHintUnderline);
       if (truncated && !listenersAttached) {
         wrap.addEventListener("mouseenter", onEnter);
         wrap.addEventListener("mouseleave", onLeave);
@@ -1876,7 +1879,7 @@
       });
     });
     wrap.appendChild(btn);
-    wireQueryPreviewHoverTooltip(wrap, span, full);
+    wireQueryPreviewHoverTooltip(wrap, span, full, { truncationHintUnderline: false });
     td.appendChild(wrap);
   }
 
@@ -1908,7 +1911,7 @@
       });
     });
     wrap.appendChild(btn);
-    wireQueryPreviewHoverTooltip(wrap, a, full);
+    wireQueryPreviewHoverTooltip(wrap, a, full, { truncationHintUnderline: true });
     td.appendChild(wrap);
   }
 
@@ -2055,7 +2058,17 @@
           const v = row[col.key];
           if (col.key === "query") {
             applyMonoTableCellClass(td, col);
-            appendQueryCell(td, v);
+            const qid = row.query_id != null && row.query_id !== undefined ? row.query_id : row.queryid;
+            if (
+              ashCellOpts &&
+              ashCellOpts.ashQueryTextLinks &&
+              qid != null &&
+              String(qid).trim() !== ""
+            ) {
+              appendQueryCellWithAshLinks(td, v, qid);
+            } else {
+              appendQueryCell(td, v);
+            }
           } else if (col.key === "per_node_counts") {
             appendTabletCountStripCell(td, v);
           } else if (col.key === "load_pct" || col.key === "time_pct") {
@@ -2300,8 +2313,16 @@
           const v = row[col.key];
           if (col.key === "query") {
             applyMonoTableCellClass(td, col);
+            const qid = row.query_id != null && row.query_id !== undefined ? row.query_id : row.queryid;
             if (pgssAshLinks && row.queryid != null && String(row.queryid) !== "") {
               appendQueryCellWithAshLinks(td, v, row.queryid);
+            } else if (
+              ashCellOpts &&
+              ashCellOpts.ashQueryTextLinks &&
+              qid != null &&
+              String(qid).trim() !== ""
+            ) {
+              appendQueryCellWithAshLinks(td, v, qid);
             } else {
               appendQueryCell(td, v);
             }
@@ -2723,7 +2744,11 @@
         ashClusterNodes,
         ashShowNodeLoadDist
       );
-      const ashReportCellOpts = { ashObjectLinks: true, ashQueryIdLinks: true };
+      const ashReportCellOpts = {
+        ashObjectLinks: true,
+        ashQueryIdLinks: true,
+        ashQueryTextLinks: true,
+      };
       const ashPaginatedOpts = { ashCellOpts: ashReportCellOpts };
       panelAsh.appendChild(
         buildSortablePaginatedTable(
@@ -2983,7 +3008,8 @@
             { key: "region", label: "region" },
             { key: "zone", label: "zone" },
           ],
-          "sec-lt-per-node"
+          "sec-lt-per-node",
+          { ashNodeLinks: true }
         )
       );
       panelTablets.appendChild(

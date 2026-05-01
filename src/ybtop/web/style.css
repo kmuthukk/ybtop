@@ -456,6 +456,9 @@ tr:nth-child(even) {
 /* Full SQL tooltip only when the cell ellipsizes; hints hover affordance */
 .query-preview--truncated {
   cursor: help;
+}
+
+.query-preview--trunc-underline {
   border-bottom: 1px dotted var(--yb-muted);
 }
 
