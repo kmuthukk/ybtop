@@ -2703,7 +2703,7 @@
         align: "right",
       };
       const mergedAshL = ashEnriched(mergedAsh);
-      const ashMainColsAll = [
+      const ashMainColsBase = [
         ASH_SPS_COL,
         ASH_LOAD_COL,
         { key: "namespace_name", label: "namespace" },
@@ -2714,6 +2714,9 @@
         { key: "query", label: "query" },
         { key: "query_id", label: "query_id" },
       ];
+      const ashMainColsAll = tableF
+        ? ashMainColsBase.filter((c) => c.key !== "namespace_name" && c.key !== "object_name")
+        : ashMainColsBase;
       const ashMainColsStripped = qF ? ashColumnsWithoutQueryIdAndQuery(ashMainColsAll) : ashMainColsAll;
       const ashMainCols = spliceAshNodeLoadDistributionColumn(
         ashMainColsStripped,
@@ -2751,7 +2754,6 @@
               [
                 ASH_SPS_COL,
                 ASH_LOAD_COL,
-                { key: "namespace_name", label: "namespace" },
                 { key: "query", label: "query" },
                 { key: "query_id", label: "query_id" },
               ],
@@ -2903,29 +2905,31 @@
         );
       }
 
-      let byDbRows = groupSum(mergedAsh, (r) => String(r.namespace_name || "(none)")).map((x) => ({
+      if (!tableF) {
+        let byDbRows = groupSum(mergedAsh, (r) => String(r.namespace_name || "(none)")).map((x) => ({
           namespace_name: x.key,
           samples: x.samples,
         }));
-      byDbRows = attachAshNodeLoadDistribution(
-        byDbRows,
-        flatAsh,
-        bucketKeyAshDbFlat,
-        ashShowNodeLoadDist
-      );
-      const byDb = ashEnriched(byDbRows);
-      panelAsh.appendChild(
-        buildSortableTable(
-          "ASH samples by database",
-          byDb,
-          spliceAshNodeLoadDistributionColumn(
-            [ASH_SPS_COL, ASH_LOAD_COL, { key: "namespace_name", label: "namespace" }],
-            ashClusterNodes,
-            ashShowNodeLoadDist
-          ),
-          "sec-ash-db"
-        )
-      );
+        byDbRows = attachAshNodeLoadDistribution(
+          byDbRows,
+          flatAsh,
+          bucketKeyAshDbFlat,
+          ashShowNodeLoadDist
+        );
+        const byDb = ashEnriched(byDbRows);
+        panelAsh.appendChild(
+          buildSortableTable(
+            "ASH samples by database",
+            byDb,
+            spliceAshNodeLoadDistributionColumn(
+              [ASH_SPS_COL, ASH_LOAD_COL, { key: "namespace_name", label: "namespace" }],
+              ashClusterNodes,
+              ashShowNodeLoadDist
+            ),
+            "sec-ash-db"
+          )
+        );
+      }
     } else {
       panelAsh.appendChild(
         el("p", {
