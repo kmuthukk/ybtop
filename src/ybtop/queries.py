@@ -146,6 +146,7 @@ def yb_local_tablets_rows(conn: psycopg.Connection) -> list[dict[str, Any]]:
         partition_key_start::text AS partition_key_start,
         partition_key_end::text AS partition_key_end,
         state::text AS state
-    FROM yb_local_tablets;
+    FROM yb_local_tablets
+    WHERE state != 'TABLET_DATA_TOMBSTONED';
     """
     return fetch_all(conn, sql)
