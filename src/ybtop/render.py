@@ -266,11 +266,7 @@ def _format_ash_sessions_per_sec(n: float) -> str:
         return "0"
     if n >= 100:
         return f"{n:.2f}"
-    if n >= 10:
-        return f"{n:.3f}"
-    if n >= 1:
-        return f"{n:.4f}"
-    return f"{n:.5f}"
+    return f"{n:.3f}"
 
 
 def live_top5_nodes_by_active_session_sec(doc: dict[str, Any]) -> Union[Table, Text]:

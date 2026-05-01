@@ -151,6 +151,78 @@ a.ash-queryid-deeplink:hover {
   font-size: calc(1em + 2pt);
 }
 
+/* ASH scoped filters (query / node / table): stronger chrome; detail line uses link color */
+.ash-mode-banner--scoped {
+  border-left: 4px solid var(--yb-accent);
+  padding: 0.55rem 0.75rem 0.6rem 0.85rem;
+  background: rgba(246, 82, 31, 0.07);
+}
+
+.ash-mode-banner--scoped .ash-mode-banner-title {
+  font-size: 0.95rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  margin-bottom: 0.4rem;
+}
+
+/* Title row: plain key + highlighted id (node view) */
+.ash-mode-banner-title--kv {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0 0.15rem;
+}
+
+.ash-mode-banner-query-highlight--inline {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-height: none;
+  overflow: visible;
+}
+
+.ash-mode-banner-query-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.35rem 0.65rem;
+}
+
+.ash-mode-banner-query-k {
+  flex-shrink: 0;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--yb-muted);
+}
+
+.ash-mode-banner-query-k::after {
+  content: ":";
+  margin-left: 0.08em;
+}
+
+.ash-mode-banner-query-highlight {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  font-size: 0.92rem;
+  font-weight: 600;
+  line-height: 1.45;
+  color: var(--yb-link);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 40vh;
+  overflow: auto;
+}
+
+.ash-mode-banner-query-highlight--empty {
+  font-weight: 500;
+  font-style: italic;
+  color: var(--yb-muted);
+}
+
 .status {
   margin-left: auto;
   font-size: 0.85rem;
@@ -276,6 +348,7 @@ section {
 
 .section-body {
   margin-top: 0.5rem;
+  overflow-x: auto;
 }
 
 .section-body[hidden] {
@@ -289,8 +362,10 @@ h2 {
   font-weight: 600;
 }
 
+/* Intrinsic width: avoid stretching sparse tables across the whole panel */
 table {
-  width: 100%;
+  width: auto;
+  max-width: 100%;
   border-collapse: collapse;
   font-size: 0.85rem;
   background: var(--yb-surface);
@@ -305,6 +380,11 @@ td {
   vertical-align: top;
 }
 
+th.yb-cell-right,
+td.yb-cell-right {
+  text-align: right;
+}
+
 th {
   background: var(--yb-panel);
   cursor: pointer;
@@ -312,6 +392,10 @@ th {
   color: var(--yb-muted);
   overflow-wrap: anywhere;
   word-wrap: break-word;
+}
+
+th.th-no-sort {
+  cursor: default;
 }
 
 /* pg_stat_statements: all column headers (and per-metric "name / call") — match row cell typography */
@@ -369,10 +453,17 @@ tr:nth-child(even) {
   cursor: default;
 }
 
+/* Full SQL tooltip only when the cell ellipsizes; hints hover affordance */
+.query-preview--truncated {
+  cursor: help;
+  border-bottom: 1px dotted var(--yb-muted);
+}
+
 /* Full SQL on hover (replaces limited native title= tooltips) */
 .query-tooltip-popup {
   position: fixed;
   z-index: 20000;
+  transform-origin: 0 0;
   max-height: min(50vh, 24rem);
   overflow: auto;
   margin: 0;
@@ -395,6 +486,11 @@ tr:nth-child(even) {
 .query-tooltip-popup-visible {
   visibility: visible;
   opacity: 1;
+}
+
+/* Short node_id hovers: don't intercept mouse (no copy UI). */
+.yb-hover-tooltip-popup {
+  pointer-events: none;
 }
 
 .icon-copy-btn {
@@ -470,13 +566,11 @@ tr:nth-child(even) {
   word-break: break-word;
 }
 
+/* Hint that values show node_id on hover (custom tooltip + dotted underline) */
+.ash-node-dist-pct,
 .yb-count-strip .yb-count-chip {
   cursor: help;
-}
-
-.yb-count-strip .yb-count-chip:hover {
-  text-decoration: underline;
-  text-underline-offset: 2px;
+  border-bottom: 1px dotted var(--yb-muted);
 }
 
 .pgss-activity-banner {
