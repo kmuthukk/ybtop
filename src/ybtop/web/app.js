@@ -2983,7 +2983,8 @@
             { key: "region", label: "region" },
             { key: "zone", label: "zone" },
           ],
-          "sec-lt-per-node"
+          "sec-lt-per-node",
+          { ashNodeLinks: true }
         )
       );
       panelTablets.appendChild(
