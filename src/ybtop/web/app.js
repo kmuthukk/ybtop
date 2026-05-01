@@ -681,6 +681,7 @@
         const k = ashMergeKey(r);
         if (!merged.has(k)) {
           merged.set(k, {
+            ash_merge_key: k,
             query_id: r.query_id,
             wait_event_component: r.wait_event_component,
             wait_event: r.wait_event,
@@ -865,6 +866,41 @@
     return null;
   }
 
+  /** queryid string → query text from pg_stat_statements.per_node (first hit per id). */
+  function buildPgStatQueryTextByQueryId(doc) {
+    const map = new Map();
+    const st = doc && doc.pg_stat_statements && doc.pg_stat_statements.per_node;
+    if (!st) return map;
+    Object.keys(st).forEach((nid) => {
+      (st[nid] || []).forEach((r) => {
+        const id =
+          r && r.queryid != null && r.queryid !== undefined ? String(r.queryid).trim() : "";
+        if (!id || map.has(id)) return;
+        const q = r.query != null && r.query !== undefined ? String(r.query).trim() : "";
+        if (q) map.set(id, q);
+      });
+    });
+    return map;
+  }
+
+  /**
+   * Fill ASH row.query from pg_stat when absent (snapshots no longer store SQL under yb_active_session_history).
+   * Legacy snapshots that still embed query on ASH rows are unchanged.
+   */
+  function enrichAshRowsQueryFromPgStat(doc, rows) {
+    const map = buildPgStatQueryTextByQueryId(doc);
+    if (!map.size || !rows || !rows.length) return rows;
+    return rows.map((r) => {
+      const existing = r.query != null && String(r.query).trim() !== "" ? String(r.query) : "";
+      if (existing) return r;
+      const qid =
+        r.query_id != null && r.query_id !== undefined ? String(r.query_id).trim() : "";
+      const fromStmt = qid ? map.get(qid) : "";
+      if (!fromStmt) return r;
+      return Object.assign({}, r, { query: fromStmt });
+    });
+  }
+
   function updateAshFilterToolbar() {
     /* Reserved: header no longer shows ASH filter context (details are in the ASH panel). */
   }
@@ -995,16 +1031,6 @@
     return Object.keys(ashPerNode || {}).length;
   }
 
-  /** Stable node id list for load-% breakdown (topology preferred). */
-  function ashClusterNodeIdsOrdered(doc, ashPerNode) {
-    const topo = doc && doc.node_topology;
-    if (topo && typeof topo === "object") {
-      const k = Object.keys(topo);
-      if (k.length > 0) return k.slice().sort();
-    }
-    return Object.keys(ashPerNode || {}).slice().sort();
-  }
-
   /** Flat ASH rows grouped by bucketKeyFn → node_id → sample sum. */
   function accumulateAshBucketNodeSamples(flatRows, bucketKeyFn) {
     const out = new Map();
@@ -1020,40 +1046,39 @@
     return out;
   }
 
-  function summarizeAshNodeLoadPct(nodeMap, allNodeIds) {
-    const ids =
-      allNodeIds && allNodeIds.length > 0
-        ? allNodeIds.slice()
-        : nodeMap && nodeMap.size > 0
-          ? Array.from(nodeMap.keys()).sort()
-          : [];
-    if (!ids.length) return null;
-    const pairs = ids.map((nid) => {
-      const s =
-        nodeMap && nodeMap.has(nid) ? Number(nodeMap.get(nid)) || 0 : 0;
-      return [nid, s];
-    });
-    const M = pairs.reduce((a, [, s]) => a + s, 0);
+  function summarizeAshNodeLoadPct(nodeMap) {
+    if (!nodeMap || nodeMap.size === 0) return null;
+    const pairs = Array.from(nodeMap.entries())
+      .map(([nid, s]) => [String(nid), Number(s) || 0])
+      .filter(([, s]) => s > 0);
+    if (!pairs.length) return null;
+    const M = pairs.reduce((acc, [, s]) => acc + s, 0);
+    if (M <= 0) return null;
     pairs.sort((a, b) => b[1] - a[1]);
     const slice = pairs.slice(0, 5);
     const parts = slice.map(([nid, s]) => ({
       node_id: nid,
-      pct: M > 0 ? (100 * s) / M : 0,
+      pct: (100 * s) / M,
     }));
     return {
       parts,
       ellipsis: pairs.length > 5,
-      contributingNodes: pairs.filter(([, s]) => s > 0).length,
     };
   }
 
-  function attachAshNodeLoadDistribution(rows, flatRows, bucketKeyFn, enabled, allNodeIds) {
+  function attachAshNodeLoadDistribution(rows, flatRows, bucketKeyFn, enabled) {
     if (!enabled || !rows || !flatRows || typeof bucketKeyFn !== "function") return rows || [];
     const acc = accumulateAshBucketNodeSamples(flatRows, bucketKeyFn);
-    return rows.map((r) => ({
-      ...r,
-      ash_node_load_distribution: summarizeAshNodeLoadPct(acc.get(bucketKeyFn(r)), allNodeIds),
-    }));
+    return rows.map((r) => {
+      const bk =
+        r.ash_merge_key != null && String(r.ash_merge_key) !== ""
+          ? String(r.ash_merge_key)
+          : bucketKeyFn(r);
+      return {
+        ...r,
+        ash_node_load_distribution: summarizeAshNodeLoadPct(acc.get(bk)),
+      };
+    });
   }
 
   function bucketKeyAshQueryIdFlat(r) {
@@ -1291,6 +1316,14 @@
     const x = Number(raw);
     if (Number.isNaN(x)) return "";
     return x.toFixed(1);
+  }
+
+  /** pg_stat time (ms) and mean_ms: two fractional digits for alignment */
+  function formatPgStatMsTwoDecimals(raw) {
+    if (raw === null || raw === undefined || raw === "") return "";
+    const x = Number(raw);
+    if (Number.isNaN(x)) return "";
+    return x.toFixed(2);
   }
 
   function tabletTableKey(namespaceName, tableName) {
@@ -1987,6 +2020,9 @@
             applyMonoTableCellClass(td, col);
             td.textContent =
               v === null || v === undefined || v === "" ? "" : Number(v).toFixed(2);
+          } else if (col.key === "total_ms" || col.key === "mean_ms") {
+            applyMonoTableCellClass(td, col);
+            td.textContent = formatPgStatMsTwoDecimals(v);
           } else if (col.key === "sessions_per_sec") {
             applyMonoTableCellClass(td, col);
             td.textContent = formatAshSessionsPerSec(v);
@@ -2245,6 +2281,9 @@
             applyMonoTableCellClass(td, col);
             td.textContent =
               v === null || v === undefined || v === "" ? "" : Number(v).toFixed(2);
+          } else if (col.key === "total_ms" || col.key === "mean_ms") {
+            applyMonoTableCellClass(td, col);
+            td.textContent = formatPgStatMsTwoDecimals(v);
           } else if (col.key === "sessions_per_sec") {
             applyMonoTableCellClass(td, col);
             td.textContent = formatAshSessionsPerSec(v);
@@ -2590,17 +2629,15 @@
         panelAsh.appendChild(note);
       }
       const ashClusterNodes = ashSnapshotClusterNodeCount(doc, ash);
-      const ashClusterNodeIds = ashClusterNodeIdsOrdered(doc, ash);
       const ashShowNodeLoadDist = ashClusterNodes > 1 && !nodeF;
       const flatAsh = flattenAsh(ashData, topo);
 
-      let mergedAsh = mergeAsh(ashData);
+      let mergedAsh = enrichAshRowsQueryFromPgStat(doc, mergeAsh(ashData));
       mergedAsh = attachAshNodeLoadDistribution(
         mergedAsh,
         flatAsh,
         ashMergeKey,
-        ashShowNodeLoadDist,
-        ashClusterNodeIds
+        ashShowNodeLoadDist
       );
 
       const ashIntervalSec = ashWindowIntervalSeconds(doc);
@@ -2655,8 +2692,7 @@
           byQueryId,
           flatAsh,
           bucketKeyAshQueryIdFlat,
-          ashShowNodeLoadDist,
-          ashClusterNodeIds
+          ashShowNodeLoadDist
         );
         const byQueryIdL = ashEnriched(byQueryId);
         panelAsh.appendChild(
@@ -2686,8 +2722,7 @@
           byNsQuery,
           flatAsh,
           bucketKeyAshNamespaceQueryFlat,
-          ashShowNodeLoadDist,
-          ashClusterNodeIds
+          ashShowNodeLoadDist
         );
         const byNsQueryL = ashEnriched(byNsQuery);
         const byNsQueryColsAll = spliceAshNodeLoadDistributionColumn(
@@ -2711,8 +2746,7 @@
           byNsObjBuckets,
           flatAsh,
           bucketKeyAshNsObjBucketFlat,
-          ashShowNodeLoadDist,
-          ashClusterNodeIds
+          ashShowNodeLoadDist
         );
         const byNsObjTop = withAshLoadPercent(
           withAshSessionsPerSec(byNsObjBuckets.slice(0, 50), ashIntervalSec),
@@ -2744,8 +2778,7 @@
           byNsObjQuery,
           flatAsh,
           bucketKeyAshNsObjQueryFlatFactory(!!qF),
-          ashShowNodeLoadDist,
-          ashClusterNodeIds
+          ashShowNodeLoadDist
         );
         const byNsObjQueryL = ashEnriched(byNsObjQuery);
         const byNsObjQueryTitle = qF
@@ -2805,29 +2838,18 @@
               samples: x.samples,
             };
           });
-        byCrzRows = attachAshNodeLoadDistribution(
-          byCrzRows,
-          flatAsh,
-          bucketKeyAshCrzFlat,
-          ashShowNodeLoadDist,
-          ashClusterNodeIds
-        );
         const byCrz = ashEnriched(byCrzRows);
         panelAsh.appendChild(
           buildSortableTable(
             "ASH by cloud + region + zone",
             byCrz,
-            spliceAshNodeLoadDistributionColumn(
-              [
-                ASH_SPS_COL,
-                ASH_LOAD_COL,
-                { key: "cloud", label: "cloud" },
-                { key: "region", label: "region" },
-                { key: "zone", label: "zone" },
-              ],
-              ashClusterNodes,
-              ashShowNodeLoadDist
-            ),
+            [
+              ASH_SPS_COL,
+              ASH_LOAD_COL,
+              { key: "cloud", label: "cloud" },
+              { key: "region", label: "region" },
+              { key: "zone", label: "zone" },
+            ],
             "sec-ash-crz"
           )
         );
@@ -2841,8 +2863,7 @@
         byDbRows,
         flatAsh,
         bucketKeyAshDbFlat,
-        ashShowNodeLoadDist,
-        ashClusterNodeIds
+        ashShowNodeLoadDist
       );
       const byDb = ashEnriched(byDbRows);
       panelAsh.appendChild(

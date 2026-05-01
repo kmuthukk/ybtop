@@ -171,11 +171,9 @@ def merge_ash_groups(
                     "object_name": r.get("object_name"),
                     "table_id": r.get("table_id"),
                     "samples": 0,
-                    "query": r.get("query"),
                 }
             m = merged[k]
             m["samples"] = int(m["samples"]) + int(r.get("samples") or 0)
-            m["query"] = m.get("query") or r.get("query")
             m["namespace_name"] = m.get("namespace_name") or r.get("namespace_name")
             m["object_name"] = m.get("object_name") or r.get("object_name")
             if m.get("table_id") is None and r.get("table_id") is not None:
@@ -207,7 +205,6 @@ def merge_ash_groups(
                 )
             )
         parts.append(("query_id", m.get("query_id")))
-        parts.append(("query", m.get("query")))
         out.append(dict(parts))
     out.sort(key=lambda x: int(x["samples"]), reverse=True)
     return out

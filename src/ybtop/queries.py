@@ -98,7 +98,6 @@ def ash_aggregated(
         s.wait_event_aux,
         s.ysql_dbid,
         s.samples,
-        p.query::text AS query,
         NULLIF(BTRIM(COALESCE(lt.namespace_name::text, d.datname::text)), '') AS namespace_name,
         NULLIF(BTRIM(lt.table_name::text), '') AS object_name,
         lt.table_id::text AS table_id
@@ -120,7 +119,6 @@ def ash_aggregated(
             wait_event_aux,
             ysql_dbid
     ) s
-    LEFT JOIN pg_stat_statements p ON s.query_id = p.queryid
     LEFT JOIN pg_database d ON d.oid = s.ysql_dbid
     LEFT JOIN LATERAL (
         SELECT
