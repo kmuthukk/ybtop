@@ -10,6 +10,8 @@
   --yb-accent-dim: #c43d15;
   --yb-link: #5eb8ff;
   --yb-danger: #ff6b6b;
+  /* Section title “Grouped By:” suffix — distinct from link blue and orange accent */
+  --yb-groupby-emphasis: #5eead4;
 }
 
 * {
@@ -344,6 +346,11 @@ section {
   flex: 1;
   min-width: 0;
   margin: 0;
+}
+
+.section-title-groupby-highlight {
+  color: var(--yb-groupby-emphasis);
+  font-weight: 700;
 }
 
 .section-body {

@@ -238,6 +238,26 @@
     return n;
   }
 
+  /** After "Grouped By:", render remainder in .section-title-groupby-highlight (accent). */
+  function fillSectionTitleWithGroupedHighlight(titleEl, titleText) {
+    titleEl.textContent = "";
+    const marker = "Grouped By:";
+    const idx = String(titleText || "").indexOf(marker);
+    if (idx === -1) {
+      titleEl.textContent = titleText == null ? "" : String(titleText);
+      return;
+    }
+    const head = String(titleText).slice(0, idx + marker.length);
+    const tail = String(titleText).slice(idx + marker.length).replace(/^\s+/, "");
+    titleEl.appendChild(document.createTextNode(head));
+    if (tail) {
+      titleEl.appendChild(document.createTextNode(" "));
+      titleEl.appendChild(
+        el("span", { className: "section-title-groupby-highlight", textContent: tail })
+      );
+    }
+  }
+
   function normQid(v) {
     if (v === null || v === undefined) return null;
     return String(v);
@@ -2042,13 +2062,16 @@
     if (subsectionId) {
       const header = el("div", { className: "section-header" });
       const toggle = el("button", { type: "button", className: "section-toggle" });
-      const h2 = el("h2", { className: "section-title", textContent: title });
+      const h2 = el("h2", { className: "section-title" });
+      fillSectionTitleWithGroupedHighlight(h2, title);
       header.appendChild(toggle);
       header.appendChild(h2);
       section.appendChild(header);
       wireSubsectionCollapse(section, subsectionId, body, toggle);
     } else {
-      section.appendChild(el("h2", { className: "section-title", textContent: title }));
+      const h2plain = el("h2", { className: "section-title" });
+      fillSectionTitleWithGroupedHighlight(h2plain, title);
+      section.appendChild(h2plain);
     }
     section.appendChild(body);
 
@@ -2283,7 +2306,7 @@
 
     const pager = el("div", { className: "pager" });
     if (!rows.length) {
-      h2.textContent = titleBase;
+      fillSectionTitleWithGroupedHighlight(h2, titleBase);
       body.appendChild(el("p", { textContent: "(no rows)" }));
       return section;
     }
@@ -2327,7 +2350,10 @@
 
     function updateHeading() {
       const tp = totalPages();
-      h2.textContent = `${titleBase} — page ${state.page} of ${tp} (${rows.length} rows)`;
+      fillSectionTitleWithGroupedHighlight(h2, titleBase);
+      h2.appendChild(
+        document.createTextNode(` — page ${state.page} of ${tp} (${rows.length} rows)`)
+      );
     }
 
     const table = el("table");
@@ -2810,9 +2836,14 @@
         ashQueryTextLinks: true,
       };
       const ashPaginatedOpts = { ashCellOpts: ashReportCellOpts };
+      const ashMainTop50GroupLabel = qF
+        ? "Table/Index + Wait_Event"
+        : tableF
+        ? "Query + Wait_Event"
+        : "Table/Index + Query + Wait_Event";
       panelAsh.appendChild(
         buildSortablePaginatedTable(
-          "Top 50 — ASH by samples",
+          `Top 50 Active Sessions/sec Grouped By: ${ashMainTop50GroupLabel}`,
           mergedAshL,
           ashMainCols,
           50,
@@ -2833,7 +2864,7 @@
         const byQueryIdL = ashEnriched(byQueryId);
         panelAsh.appendChild(
           buildSortableTable(
-            `ASH by query (${byQueryIdL.length} groups)`,
+            `Active Sessions/Sec Grouped By: Query (${byQueryIdL.length} groups)`,
             byQueryIdL,
             spliceAshNodeLoadDistributionColumn(
               [
@@ -2871,7 +2902,7 @@
           ashClusterNodes,
           ashShowNodeLoadDist
         );
-        const byNsQueryTitle = `ASH by namespace + query (${byNsQueryL.length} groups)`;
+        const byNsQueryTitle = `Active Sessions/Sec Grouped By: Database & Query (${byNsQueryL.length} groups)`;
         panelAsh.appendChild(
           buildSortableTable(byNsQueryTitle, byNsQueryL, byNsQueryColsAll, "sec-ash-ns-q", ashReportCellOpts)
         );
@@ -2889,7 +2920,7 @@
         );
         panelAsh.appendChild(
           buildSortableTable(
-            "Top 50 — ASH by namespace + object_name",
+            "Top 50 Active Sessions/Sec Grouped By: Database & Table/Index",
             byNsObjTop,
             spliceAshNodeLoadDistributionColumn(
               [
@@ -2917,8 +2948,8 @@
         );
         const byNsObjQueryL = ashEnriched(byNsObjQuery);
         const byNsObjQueryTitle = qF
-          ? `ASH by namespace + object_name (${byNsObjQueryL.length} groups)`
-          : `ASH by namespace + object_name + query (${byNsObjQueryL.length} groups)`;
+          ? `Active Sessions/sec Grouped By: Database + Table/Index (${byNsObjQueryL.length} groups)`
+          : `Active Sessions/Sec Grouped By: Table/Index & Query (${byNsObjQueryL.length} groups)`;
         const byNsObjQueryColsAll = spliceAshNodeLoadDistributionColumn(
           [
             ASH_SPS_COL,
@@ -2949,7 +2980,7 @@
         const byNode = ashEnriched(sumAshByNode(flatAsh));
         panelAsh.appendChild(
           buildSortableTable(
-            "ASH samples by node",
+            "Active Sessions/Sec Grouped By: Node",
             byNode,
             [
               ASH_SPS_COL,
@@ -2976,7 +3007,7 @@
         const byCrz = ashEnriched(byCrzRows);
         panelAsh.appendChild(
           buildSortableTable(
-            "ASH by cloud + region + zone",
+            "Active Sessions/Sec Grouped By: Cloud, Region & Zone",
             byCrz,
             [
               ASH_SPS_COL,
@@ -3004,7 +3035,7 @@
         const byDb = ashEnriched(byDbRows);
         panelAsh.appendChild(
           buildSortableTable(
-            "ASH samples by database",
+            "Active Sessions/Sec Grouped By: Database",
             byDb,
             spliceAshNodeLoadDistributionColumn(
               [ASH_SPS_COL, ASH_LOAD_COL, { key: "namespace_name", label: "namespace" }],
