@@ -236,13 +236,13 @@ def _format_pg_rows_for_table(
 ) -> tuple[list[dict[str, str]], list[str]]:
     """
     first_col_key is 'calls' (cumulative) or 'calls/sec' (delta).
-    Produces display dicts in column order: first col, time (ms), time %, mean_ms, query, [dbname], [rows/call], queryid.
+    Produces display dicts in column order: first col, total time (ms), time %, mean time (ms), query, [dbname], [rows/call], queryid.
     """
     keys: list[str] = [
         first_col_key,
-        "time (ms)",
+        "total time (ms)",
         "time %",
-        "mean_ms",
+        "mean time (ms)",
         "query",
     ]
     if include_db:
@@ -271,9 +271,9 @@ def _format_pg_rows_for_table(
         q = r.get("query")
         d = {
             first_col_key: c_str,
-            "time (ms)": f"{float(tms):.2f}" if tms is not None else "",
+            "total time (ms)": f"{float(tms):.2f}" if tms is not None else "",
             "time %": f"{float(tpct):.2f}" if tpct is not None else "",
-            "mean_ms": f"{float(mm):.2f}" if mm is not None else "",
+            "mean time (ms)": f"{float(mm):.2f}" if mm is not None else "",
             "query": ("" if q is None else str(q)),
         }
         if include_db:

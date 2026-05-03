@@ -350,6 +350,201 @@
     return out;
   }
 
+  /**
+   * When several merged rows share the same queryid (different dbname), prefer the highest total_ms
+   * so ASH banner metrics align with the dominant statements row.
+   */
+  function pickMergedPgStatRowForQueryId(rows, qid) {
+    const want = normQid(qid);
+    if (want == null || !rows || !rows.length) return null;
+    const matches = rows.filter((r) => normQid(r.queryid) === want);
+    if (!matches.length) return null;
+    matches.sort((a, b) => (Number(b.total_ms) || 0) - (Number(a.total_ms) || 0));
+    return matches[0];
+  }
+
+  function pgStatPerNodeHasRowsColumn(perNode) {
+    let has = false;
+    Object.keys(perNode || {}).forEach((nid) => {
+      (perNode[nid] || []).forEach((r) => {
+        if (Object.prototype.hasOwnProperty.call(r, "rows")) has = true;
+      });
+    });
+    return has;
+  }
+
+  /** Sum `calls` on one node for the merged pg_stat row identity (queryid + dbname), matching mergeStatements keys. */
+  function statementCallsOnNodeMatching(perNode, nodeId, pgRow) {
+    const wantQ = normQid(pgRow.queryid);
+    if (wantQ == null) return 0;
+    const dn =
+      pgRow.dbname != null && pgRow.dbname !== undefined ? String(pgRow.dbname).trim() : "";
+    const nid = nodeId != null && nodeId !== undefined ? String(nodeId) : "";
+    const rows = (perNode || {})[nid] || [];
+    let sum = 0;
+    rows.forEach((r) => {
+      if (normQid(r.queryid) !== wantQ) return;
+      const rdn = r.dbname != null && r.dbname !== undefined ? String(r.dbname).trim() : "";
+      if (rdn !== dn) return;
+      sum += Number(r.calls) || 0;
+    });
+    return sum;
+  }
+
+  /**
+   * Per-node positive contributions for the scoped statement: cumulative calls, or Δcalls vs prior when deltaMode.
+   * Same “positive weights only” split as ASH load distribution (summarizeAshNodeLoadPct).
+   */
+  function pgStatCallsContributorsPerNodeMap(perNode, pgRow, prevPerNode, deltaMode) {
+    const keys = new Set(Object.keys(perNode || {}));
+    if (deltaMode && prevPerNode) {
+      Object.keys(prevPerNode).forEach((k) => keys.add(k));
+    }
+    const nm = new Map();
+    keys.forEach((nid) => {
+      const cur = statementCallsOnNodeMatching(perNode, nid, pgRow);
+      let metric = cur;
+      if (deltaMode && prevPerNode) {
+        const prev = statementCallsOnNodeMatching(prevPerNode, nid, pgRow);
+        metric = cur - prev;
+      }
+      if (metric > 0) nm.set(String(nid), metric);
+    });
+    return nm;
+  }
+
+  /** Same layout/tooltips as Load Distribution % table cells; skips row when cluster has ≤1 node. */
+  function appendAshBannerCallsDistributionRow(noteEl, clusterNodeCount, dist) {
+    if (clusterNodeCount <= 1) return;
+    const row = el("div", { className: "ash-mode-banner-query-row" });
+    row.appendChild(
+      el("span", {
+        className: "ash-mode-banner-query-k",
+        textContent: `Calls Distribution % (across ${clusterNodeCount} nodes)`,
+      })
+    );
+    const val = el("span", { className: "ash-mode-banner-query-highlight" });
+    if (!dist || !dist.parts || !dist.parts.length) {
+      val.classList.add("ash-mode-banner-query-highlight--empty");
+      val.textContent = "—";
+    } else {
+      dist.parts.forEach((p, idx) => {
+        if (idx > 0) val.appendChild(document.createTextNode(", "));
+        const span = el("span", {
+          className: "ash-node-dist-pct",
+          textContent: `${Number(p.pct).toFixed(1)}%`,
+        });
+        wireQuickNodeIdTooltip(span, p.node_id);
+        val.appendChild(span);
+      });
+      if (dist.ellipsis) {
+        val.appendChild(document.createTextNode(", …"));
+      }
+    }
+    row.appendChild(val);
+    noteEl.appendChild(row);
+  }
+
+  /** Key/value row under ASH scoped banners; empty value shows em dash in muted style. */
+  function ashBannerMetricRow(noteEl, keyLabel, valueText) {
+    const row = el("div", { className: "ash-mode-banner-query-row" });
+    row.appendChild(el("span", { className: "ash-mode-banner-query-k", textContent: keyLabel }));
+    const disp = valueText == null || valueText === "" ? "" : String(valueText);
+    const empty = disp === "";
+    row.appendChild(
+      el("span", {
+        className: empty
+          ? "ash-mode-banner-query-highlight ash-mode-banner-query-highlight--empty"
+          : "ash-mode-banner-query-highlight",
+        textContent: empty ? "—" : disp,
+      })
+    );
+    noteEl.appendChild(row);
+  }
+
+  /**
+   * Metrics from merged pg_stat_statements for the scoped query_id (same cumulative vs Δ rules as main statements table).
+   * @param ashPerNode ASH per_node map (unfiltered) for cluster node count only.
+   */
+  function appendAshScopedQueryPgStatLines(noteEl, doc, prevDoc, qF, st, ashPerNode) {
+    const want = normQid(qF);
+    if (want == null || !st) return;
+
+    const merged = mergeStatements(st);
+    const prevSt = prevDoc && prevDoc.pg_stat_statements && prevDoc.pg_stat_statements.per_node;
+    const hasRowsCol = pgStatPerNodeHasRowsColumn(st);
+
+    let pgRow = null;
+    let deltaMode = false;
+    if (prevDoc && prevSt) {
+      deltaMode = true;
+      const mergedPrev = mergeStatements(prevSt);
+      const deltaRows = deltaPgStatMergedRows(merged, mergedPrev);
+      const derived = withPgStatDeltaDerivedRows(
+        deltaRows,
+        prevDoc.generated_at_utc,
+        doc.generated_at_utc
+      );
+      pgRow = pickMergedPgStatRowForQueryId(derived, qF);
+    } else {
+      const withPct = withPgStatTimePercent(merged);
+      pgRow = pickMergedPgStatRowForQueryId(withPct, qF);
+    }
+
+    if (!pgRow) {
+      ashBannerMetricRow(
+        noteEl,
+        "pg_stat_statements",
+        deltaMode
+          ? "No Δ row for this query vs prior (zero change or not in merge)."
+          : "No merged row for this query."
+      );
+      return;
+    }
+
+    if (deltaMode) {
+      const cps = pgRow.calls_per_sec;
+      ashBannerMetricRow(
+        noteEl,
+        "calls/s",
+        cps != null && cps !== "" ? Number(cps).toFixed(2) : ""
+      );
+    } else {
+      ashBannerMetricRow(
+        noteEl,
+        "calls",
+        pgRow.calls != null && pgRow.calls !== "" ? String(pgRow.calls) : ""
+      );
+    }
+
+    const clusterNodes = ashSnapshotClusterNodeCount(doc, ashPerNode || {});
+    const contribMap = pgStatCallsContributorsPerNodeMap(st, pgRow, prevSt, deltaMode);
+    const callsDist = summarizeAshNodeLoadPct(contribMap);
+    appendAshBannerCallsDistributionRow(noteEl, clusterNodes, callsDist);
+
+    const tms = formatPgStatMsTwoDecimals(pgRow.total_ms);
+    const pctBracket =
+      pgRow.time_pct != null && pgRow.time_pct !== ""
+        ? `[${Number(pgRow.time_pct).toFixed(2)}%]`
+        : "";
+    let totalTimeVal = "";
+    if (tms && pctBracket) totalTimeVal = `${tms} (ms) ${pctBracket}`;
+    else if (tms) totalTimeVal = `${tms} (ms)`;
+    else totalTimeVal = pctBracket;
+    ashBannerMetricRow(noteEl, "total time", totalTimeVal);
+
+    const meanMs = formatPgStatMsTwoDecimals(pgRow.mean_ms);
+    ashBannerMetricRow(noteEl, "mean time", meanMs ? `${meanMs} ms` : "");
+
+    if (hasRowsCol) {
+      const rawRpc =
+        pgRow.rows_per_call != null && pgRow.rows_per_call !== ""
+          ? pgRow.rows_per_call
+          : pgRow.avg_rows_per_call;
+      ashBannerMetricRow(noteEl, "rows/call", formatPgStatPerCallMetric(rawRpc));
+    }
+  }
+
   function pgStatStatementColumns(merged, perNode) {
     let hasRowsInSource = false;
     let hasDbnameInSource = false;
@@ -361,9 +556,9 @@
     });
     const cols = [
       { key: "calls", label: "calls", type: "number", align: "right" },
-      { key: "total_ms", label: "time (ms)", type: "number", align: "right" },
+      { key: "total_ms", label: "total time (ms)", type: "number", align: "right" },
       { key: "time_pct", label: "time %", type: "number", align: "right" },
-      { key: "mean_ms", label: "mean_ms", type: "number", align: "right" },
+      { key: "mean_ms", label: "mean time (ms)", type: "number", align: "right" },
       { key: "query", label: "query" },
     ];
     if (hasDbnameInSource) {
@@ -490,9 +685,9 @@
     });
     const cols = [
       { key: "calls_per_sec", label: "calls/s", type: "number", align: "right" },
-      { key: "total_ms", label: "time (ms)", type: "number", align: "right" },
+      { key: "total_ms", label: "total time (ms)", type: "number", align: "right" },
       { key: "time_pct", label: "time %", type: "number", align: "right" },
-      { key: "mean_ms", label: "mean_ms", type: "number", align: "right" },
+      { key: "mean_ms", label: "mean time (ms)", type: "number", align: "right" },
       { key: "query", label: "query" },
     ];
     if (hasDbnameInSource) {
@@ -2762,10 +2957,16 @@
         const qText =
           qRaw != null && String(qRaw).trim() !== "" ? String(qRaw).trim() : "";
         const note = el("div", { className: "ash-mode-banner ash-mode-banner--scoped" });
+        let ashQueryTitle = `query_id=${qF}`;
+        if (st) {
+          const mergedAshTitle = mergeStatements(st);
+          const rowDb = pickMergedPgStatRowForQueryId(mergedAshTitle, qF);
+          if (rowDb && rowDb.dbname) ashQueryTitle += `; dbname=${rowDb.dbname}`;
+        }
         note.appendChild(
           el("div", {
             className: "ash-mode-banner-title",
-            textContent: `query_id=${qF}`,
+            textContent: ashQueryTitle,
           })
         );
         const row = el("div", { className: "ash-mode-banner-query-row" });
@@ -2779,6 +2980,7 @@
           })
         );
         note.appendChild(row);
+        appendAshScopedQueryPgStatLines(note, doc, prevDoc, qF, st, ash);
         panelAsh.appendChild(note);
       }
       const ashClusterNodes = ashSnapshotClusterNodeCount(doc, ash);
