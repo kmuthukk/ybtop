@@ -24,6 +24,37 @@
     "docdb_write_time",
   ];
 
+  /**
+   * YugabyteDB ASH reserved query_id values (internal / background). Not user SQL.
+   * Extend when new ops ship (often ids below ~100). Names match server-side QueryIdTag.
+   */
+  const YB_BACKGROUND_QUERY_ID_LABELS = {
+    1: "LogAppender",
+    2: "Flush",
+    3: "Compaction",
+    4: "RaftUpdateConsensus",
+    5: "UncomputedQueryId",
+    6: "LogBackgroundSync",
+    7: "YSQLBackgroundWorker",
+    8: "RemoteBootstrap",
+    9: "Snapshot",
+    10: "YcqlAuthResponseRequest",
+    11: "Walsender",
+    12: "XCluster",
+    13: "MinRunningHybridTime",
+  };
+
+  /** @returns {string|null} Display label for reserved background query_id (currently 1–13), else null. */
+  function backgroundAshQueryLabel(queryId) {
+    const raw =
+      queryId != null && queryId !== undefined ? String(queryId).trim() : "";
+    if (!raw || !/^\d+$/.test(raw)) return null;
+    const n = Number(raw);
+    if (!Number.isFinite(n) || n < 1 || n > 13) return null;
+    const label = YB_BACKGROUND_QUERY_ID_LABELS[n];
+    return label != null ? label : null;
+  }
+
   const CLIPBOARD_SVG =
     '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
 
@@ -1064,9 +1095,11 @@
   }
 
   function getQueryTextForToolbar(doc, qid) {
+    const want = normQid(qid);
+    const bg = backgroundAshQueryLabel(want);
+    if (bg) return bg;
     const fromAsh = getFirstQueryTextForFilter(doc, qid);
     if (fromAsh) return fromAsh;
-    const want = normQid(qid);
     if (want == null) return null;
     const st = doc && doc.pg_stat_statements && doc.pg_stat_statements.per_node;
     if (!st) return null;
@@ -1099,17 +1132,19 @@
   }
 
   /**
-   * Fill ASH row.query from pg_stat when absent (snapshots no longer store SQL under yb_active_session_history).
-   * Legacy snapshots that still embed query on ASH rows are unchanged.
+   * Fill ASH row.query: reserved background query_ids (1–13) get fixed labels; else pg_stat when absent.
+   * Legacy snapshots that still embed query on ASH rows keep it unless the row is a reserved background id.
    */
   function enrichAshRowsQueryFromPgStat(doc, rows) {
+    if (!rows || !rows.length) return rows;
     const map = buildPgStatQueryTextByQueryId(doc);
-    if (!map.size || !rows || !rows.length) return rows;
     return rows.map((r) => {
+      const qidRaw = r.query_id != null && r.query_id !== undefined ? r.query_id : r.queryid;
+      const qid = qidRaw != null && qidRaw !== undefined ? String(qidRaw).trim() : "";
+      const bg = backgroundAshQueryLabel(qid);
+      if (bg) return Object.assign({}, r, { query: bg });
       const existing = r.query != null && String(r.query).trim() !== "" ? String(r.query) : "";
       if (existing) return r;
-      const qid =
-        r.query_id != null && r.query_id !== undefined ? String(r.query_id).trim() : "";
       const fromStmt = qid ? map.get(qid) : "";
       if (!fromStmt) return r;
       return Object.assign({}, r, { query: fromStmt });

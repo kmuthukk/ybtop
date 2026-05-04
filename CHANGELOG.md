@@ -2,6 +2,26 @@
 
 All notable functional changes to **ybtop** are listed here by release. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) (newest first).
 
+## [0.1.9] — 2026-04-23
+
+### Added
+
+- **ASH query-scoped banner (browser):** When the viewer filters ASH by **`query`**, the panel shows statement context from **`pg_stat_statements`** when present: title line **`query_id=…`** plus **`dbname=…`** when the merged row has a database name; metrics aligned with the statements tab (**calls/s** in Δ mode vs cumulative **calls**, **total time** as `… (ms) [time %]`, **mean time … ms**, **rows/call** when the snapshot includes row counts), including **Δ vs prior snapshot** when the prior snapshot includes pg_stat data.
+- **Calls distribution for that query (browser):** **Calls Distribution % (across N nodes)** summarizes each node’s share of **Δcalls** (delta mode) or **calls** (cumulative) for the filtered **`query_id`** + **`dbname`** identity, top entries with **`…`** beyond five and **node_id** hover tooltips (multi-node clusters only; same interaction pattern as ASH load distribution).
+- **Reserved ASH `query_id` names (1–13):** Internal YugabyteDB background **`query_id`** values (e.g. **Flush**, **Compaction**, **RemoteBootstrap**, **Snapshot**, **XCluster**) display fixed labels in the **query** column and query banner instead of blank SQL; the mapping can be extended as new reserved ids appear in newer releases.
+
+### Changed
+
+- **Statements table (browser + `ybtop watch` Rich tables):** Numeric column headers are **total time (ms)** and **mean time (ms)** (replacing **time (ms)** and **mean_ms** in the UI copy).
+- **ASH section titles (browser):** **Active Sessions / sec** grouping titles are easier to scan; **Grouped By:** suffix uses accent styling; **Top 50 — ASH** subtitles reflect whether the roll-up is query-focused, table-focused, or full dimension mix.
+- **ASH scoped by `table_id`:** Omits redundant **query** / **query_id** columns and collapses sections that add no information in that mode.
+- **Navigation:** Additional **`query_id`** and **`node_id`** links from ASH / tablet-report contexts filter the ASH tab consistently.
+
+### Fixed
+
+- **Load Distribution %** could show no data in ASH roll-ups grouped primarily by **query** (merged bucket ↔ flat per-node row alignment).
+- **Query tooltip / underline:** Full-SQL hover applies only when the **query** cell is truncated; node-percent tooltips use improved positioning.
+
 ## [0.1.8]
 
 ### Added
