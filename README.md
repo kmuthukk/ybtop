@@ -8,6 +8,14 @@ Terminal and browser-based observability for [YugabyteDB](https://www.yugabyte.c
 pip3 install .
 ```
 
+## Run with [`uv`](https://docs.astral.sh/uv/) (no install, no clone)
+
+Run directly from GitHub without installing or cloning:
+
+```bash
+uv tool run --from git+https://github.com/kmuthukk/ybtop ybtop --help
+```
+
 ## Key commands
 
 | Command | Purpose |
